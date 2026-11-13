@@ -631,13 +631,138 @@ def build_context_for_doc(raw_context: Dict[str, Any], doc: DocxTemplate, mode_k
 
 
 # ==============================================================================
-# 5. ANTARMUKA STREAMLIT (UI)
+# 5. ANTARMUKA STREAMLIT (FULL CUSTOM CSS ALA TAILWIND / ILOVEPDF)
 # ==============================================================================
 
-st.set_page_config(page_title="FormPrint Studio - Generator Naskah & LJK", page_icon="🖨️", layout="centered")
+st.set_page_config(
+    page_title="FormPrint Studio - Konversi Google Form ke Naskah Cetak",
+    page_icon="🖨️",
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
 
-st.title("🖨️ FormPrint Studio")
-st.markdown("Konversi **Google Form** menjadi **Naskah Soal**, **Lembar Jawaban Siswa**, dan **Lembar Kunci Jawaban** siap cetak (DOCX & PDF).")
+# Suntikkan CSS Kustom untuk mengubah tampilan standar Streamlit
+st.markdown("""
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+
+    /* Terapkan Font & Warna Latar Belakang Ala Tailwind Slate-50 */
+    html, body, [class*="css"] {
+        font-family: 'Plus Jakarta Sans', sans-serif !important;
+    }
+    .stApp {
+        background-color: #f8fafc;
+    }
+
+    /* Sembunyikan Header, Tombol Deploy, dan Footer bawaan Streamlit */
+    #MainMenu {visibility: hidden;}
+    header {visibility: hidden;}
+    footer {visibility: hidden;}
+    .stDeployButton {display: none;}
+
+    /* Atur lebar & ruang kontainer utama */
+    .block-container {
+        max-width: 820px !important;
+        padding-top: 2.5rem !important;
+        padding-bottom: 4rem !important;
+    }
+
+    /* Desain Kartu Form Putih (Mirip index.html) */
+    [data-testid="stForm"] {
+        background-color: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 16px;
+        padding: 2rem 2.2rem !important;
+        box-shadow: 0 4px 20px -2px rgba(15, 23, 42, 0.05);
+    }
+
+    /* Kustomisasi Input Teks */
+    .stTextInput input {
+        border-radius: 10px !important;
+        border: 1px solid #cbd5e1 !important;
+        padding: 0.65rem 0.9rem !important;
+        font-size: 0.92rem !important;
+        background-color: #f8fafc !important;
+    }
+    .stTextInput input:focus {
+        border-color: #4f46e5 !important;
+        box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15) !important;
+        background-color: #ffffff !important;
+    }
+
+    /* Kustomisasi Kotak Upload File */
+    [data-testid="stFileUploader"] section {
+        border-radius: 12px !important;
+        border: 1.5px dashed #cbd5e1 !important;
+        background-color: #f8fafc !important;
+        padding: 1rem !important;
+        transition: all 0.2s ease;
+    }
+    [data-testid="stFileUploader"] section:hover {
+        border-color: #6366f1 !important;
+        background-color: #eef2ff !important;
+    }
+
+    /* Kustomisasi Tombol Utama (Indigo Gradient) */
+    [data-testid="stFormSubmitButton"] button {
+        background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%) !important;
+        color: white !important;
+        font-weight: 700 !important;
+        font-size: 0.98rem !important;
+        padding: 0.75rem 1.5rem !important;
+        border-radius: 12px !important;
+        border: none !important;
+        box-shadow: 0 4px 12px rgba(79, 70, 229, 0.25) !important;
+        transition: all 0.2s ease !important;
+        margin-top: 0.5rem !important;
+    }
+    [data-testid="stFormSubmitButton"] button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 6px 16px rgba(79, 70, 229, 0.35) !important;
+    }
+
+    /* Kustomisasi Tab Pratinjau Hasil */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        background-color: #e2e8f0;
+        padding: 6px;
+        border-radius: 12px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 8px;
+        padding: 8px 16px;
+        font-weight: 600;
+        font-size: 0.9rem;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #ffffff !important;
+        color: #4f46e5 !important;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+
+    /* Label Form */
+    .stTextInput label, .stSelectbox label, [data-testid="stFileUploader"] label {
+        font-weight: 600 !important;
+        color: #1e293b !important;
+        font-size: 0.9rem !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Header Banner Modern (HTML Kustom)
+st.markdown("""
+<div style="text-align: center; margin-bottom: 2rem;">
+    <span style="background-color: #e0e7ff; color: #4338ca; padding: 6px 14px; border-radius: 9999px; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase;">
+        Otomatisasi Dokumen Ujian
+    </span>
+    <h1 style="color: #0f172a; font-size: 2.25rem; font-weight: 800; margin-top: 0.85rem; margin-bottom: 0.5rem; letter-spacing: -0.025em;">
+        FormPrint Studio
+    </h1>
+    <p style="color: #64748b; font-size: 1rem; max-width: 580px; margin: 0 auto; line-height: 1.5;">
+        Konversi <b>Google Form</b> menjadi <b>Naskah Soal</b>, <b>Lembar Jawaban Siswa</b>, dan <b>Kunci Jawaban</b> siap cetak (DOCX & PDF) dalam satu klik.
+    </p>
+</div>
+""", unsafe_allow_html=True)
 
 creds = get_google_credentials()
 drive_folder_id = st.secrets.get("DRIVE_FOLDER_ID", "") if "DRIVE_FOLDER_ID" in st.secrets else os.environ.get("DRIVE_FOLDER_ID", "")
@@ -646,16 +771,27 @@ selected_drive_form_id = None
 if creds and drive_folder_id:
     forms_list = list_forms_in_drive_folder(creds, drive_folder_id)
     if forms_list:
-        st.success(f"📁 Terhubung ke Folder Google Drive Sekolah ({len(forms_list)} Google Form ditemukan)")
+        st.markdown(f"""
+        <div style="background-color: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; padding: 12px 16px; border-radius: 12px; font-size: 0.88rem; font-weight: 600; margin-bottom: 1rem;">
+            📁 Terhubung ke Folder Google Drive Sekolah ({len(forms_list)} Google Form tersedia)
+        </div>
+        """, unsafe_allow_html=True)
         pilihan_nama = ["-- Gunakan Link Manual di Bawah --"] + [f"{f['name']}" for f in forms_list]
-        pilihan_user = st.selectbox("Pilih Google Form dari Folder Drive Sekolah:", pilihan_nama)
+        pilihan_user = st.selectbox("Pilih Soal dari Folder Google Drive Sekolah:", pilihan_nama)
         if pilihan_user != "-- Gunakan Link Manual di Bawah --":
             idx_pilih = pilihan_nama.index(pilihan_user) - 1
             selected_drive_form_id = forms_list[idx_pilih]["id"]
 
 with st.form("form_utama"):
+    st.markdown("""
+    <div style="margin-bottom: 0.5rem;">
+        <span style="font-size: 1.05rem; font-weight: 700; color: #0f172a;">Konfigurasi Dokumen</span>
+        <p style="font-size: 0.8rem; color: #64748b; margin-top: 2px;">Masukkan tautan formulir dan unggah template Word yang ingin dicetak.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
     form_url = st.text_input(
-        "1. Link Google Form (Atau kosongkan jika sudah memilih dari Folder Drive di atas)",
+        "1. Link Google Form",
         placeholder="https://docs.google.com/forms/d/.../edit atau /viewform"
     )
 
@@ -663,20 +799,27 @@ with st.form("form_utama"):
     with col_tpl1:
         tpl_naskah = st.file_uploader("2. Template Naskah Soal (.docx)", type=["docx"])
     with col_tpl2:
-        tpl_ljk = st.file_uploader("3. Template Lembar Jawaban (.docx) [Opsional]", type=["docx"])
+        tpl_ljk = st.file_uploader("3. Template Lembar Jawaban (.docx)", type=["docx"])
 
-    submit_btn = st.form_submit_button("Generate Dokumen Siap Cetak", use_container_width=True, type="primary")
+    submit_btn = st.form_submit_button("✨ Generate Dokumen Siap Cetak", use_container_width=True, type="primary")
+
+# Panduan Ringkas di Bawah Kartu Utama
+with st.expander("📖 Lihat Cara Pakai & Informasi Template"):
+    st.markdown("""
+    * **Cetak Naskah Soal Saja:** Cukup unggah file pada kotak **2. Template Naskah Soal**.
+    * **Cetak Lembar Jawaban & Kunci Sekaligus:** Unggah file pada kotak **3. Template Lembar Jawaban**. Sistem otomatis menghasilkan 2 dokumen: *Lembar Jawaban Siswa (Kosong)* dan *Kunci Jawaban Guru (Terisi)*.
+    * **Keamanan Berkas:** Seluruh dokumen diproses di memori sementara dan langsung terhapus otomatis setelah sesi selesai.
+    """)
 
 if submit_btn:
     target_input = selected_drive_form_id or form_url.strip()
     if not target_input:
-        st.error("Mohon pilih Google Form dari daftar atau masukkan link Google Form.")
+        st.error("Mohon pilih Google Form dari daftar atau masukkan link Google Form terlebih dahulu.")
     elif not tpl_naskah and not tpl_ljk:
         st.error("Mohon unggah minimal satu file Template Word (Template Naskah Soal atau Template Lembar Jawaban).")
     else:
-        with st.spinner("Mengekstrak soal, kunci jawaban, gambar, & merender dokumen..."):
+        with st.spinner("Sedang mengekstrak soal, mengunduh gambar, & menyusun tata letak halaman..."):
             try:
-                # Pilih metode ekstraksi: via API (jika ada kredensial & ID valid) atau via Publik
                 form_id = extract_form_id_from_url(target_input)
                 if creds and form_id:
                     raw_ctx = extract_via_forms_api(form_id, creds)
@@ -690,7 +833,6 @@ if submit_btn:
                 st.session_state["hasil_files"] = {}
 
                 with tempfile.TemporaryDirectory() as tmpdir:
-                    # A. Render Naskah Soal (Jika diunggah)
                     if tpl_naskah:
                         p_tpl_soal = os.path.join(tmpdir, "tpl_soal.docx")
                         p_out_soal = os.path.join(tmpdir, "Naskah_Soal.docx")
@@ -710,7 +852,6 @@ if submit_btn:
 
                         st.session_state["hasil_files"]["naskah"] = {"docx": docx_b, "pdf": pdf_b}
 
-                    # B. Render Lembar Jawaban Siswa & Kunci Jawaban Guru (Jika diunggah)
                     if tpl_ljk:
                         p_tpl_ljk = os.path.join(tmpdir, "tpl_ljk.docx")
                         with open(p_tpl_ljk, "wb") as f:
@@ -750,12 +891,16 @@ if submit_btn:
                 st.session_state["generated"] = False
                 st.error(f"Gagal memproses dokumen: {str(e)}")
 
-# Tampilkan Hasil & Tab Pratinjau
+# Panel Hasil & Pratinjau
 if st.session_state.get("generated"):
     hasil = st.session_state.get("hasil_files", {})
     judul = st.session_state.get("judul_naskah", "Dokumen")
 
-    st.success("✅ Seluruh dokumen berhasil di-generate!")
+    st.markdown("""
+    <div style="background-color: #ecfdf5; border: 1px solid #6ee7b7; color: #065f46; padding: 14px 18px; border-radius: 12px; font-weight: 600; font-size: 0.92rem; margin-top: 1.5rem; margin-bottom: 1rem;">
+        ✅ Dokumen siap cetak berhasil dibuat! Pilih tab di bawah untuk mengunduh atau melihat pratinjau.
+    </div>
+    """, unsafe_allow_html=True)
 
     tab_labels = []
     if "naskah" in hasil:
@@ -796,3 +941,9 @@ if st.session_state.get("generated"):
                 if item_data["pdf"]:
                     pdf_viewer(input=item_data["pdf"], height=680, key=f"pv_{key_id}")
             tab_idx += 1
+
+st.markdown("""
+<div style="text-align: center; margin-top: 3.5rem; color: #94a3b8; font-size: 0.78rem;">
+    FormPrint Studio • Sistem Otomatisasi Naskah Ujian & Lembar Jawaban
+</div>
+""", unsafe_allow_html=True)
