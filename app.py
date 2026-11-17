@@ -31,31 +31,30 @@ except ImportError:
 ALPHABETS = list(string.ascii_uppercase)
 pdf_lock = threading.Lock()
 
-# Kata kunci penanda Bagian Terakhir (Konfirmasi Selesai)
-CLOSING_SECTION_KEYWORDS = [
-    "tahap akhir",
-    "cek kembali",
-    "akhiri dengan doa",
-    "klik selesai",
-    "yakin dengan jawabanmu",
-]
-
 
 # ==============================================================================
-# 1. FILTER BAGIAN PENUTUP ("TAHAP AKHIR / KLIK SELESAI")
+# 1. FILTER BAGIAN PENUTUP ("TAHAP AKHIR / KLIK SELESAI") YANG AMAN
 # ==============================================================================
 
 def is_closing_question(q: Dict[str, Any]) -> bool:
-    """Mendeteksi apakah suatu butir pertanyaan adalah tombol konfirmasi 'KLIK SELESAI'."""
-    q_text = (q.get("pertanyaan") or "").lower()
-    if any(k in q_text for k in ["klik selesai", "yakin dengan jawabanmu", "tahap akhir"]):
-        return True
-
+    """
+    Mendeteksi apakah suatu butir pertanyaan HANYALAH tombol konfirmasi 'KLIK SELESAI'.
+    Soal ujian asli (yang punya >= 2 opsi, atau kisi/uraian) tidak akan pernah terhapus.
+    """
+    q_text = (q.get("pertanyaan") or "").strip().lower()
     opsi = q.get("opsi", [])
+
+    # Soal pilihan ganda konfirmasi selesai umumnya hanya punya 1 opsi ("SELESAI")
     if len(opsi) == 1:
         opt_text = (opsi[0].get("teks") or "").strip().lower()
-        if opt_text in {"selesai", "a. selesai", "ya", "kirim", "submit"} or "selesai" in opt_text:
+        if opt_text in {"selesai", "a. selesai", "ya", "sudah", "kirim", "submit"} or "selesai" in opt_text:
             return True
+        if any(k in q_text for k in ["klik selesai", "yakin dengan jawabanmu", "tahap akhir"]):
+            return True
+
+    # Jika tanpa opsi tetapi teks pertanyaannya murni instruksi klik selesai
+    if len(opsi) == 0 and any(k in q_text for k in ["jika kamu yakin dengan jawabanmu", "klik selesai!"]):
+        return True
 
     return False
 
@@ -63,36 +62,43 @@ def is_closing_question(q: Dict[str, Any]) -> bool:
 def filter_valid_exam_sections(raw_sections: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Membuang bagian penutup ('SELAMAT... TAHAP AKHIR / KLIK SELESAI') 
-    dan menomori ulang no_global untuk kebutuhan Lembar Jawaban (LJK).
+    TANPA pernah membuang bagian yang berisi soal-soal ujian.
     """
     filtered_sections = []
     total_sec = len(raw_sections)
 
     for idx, sec in enumerate(raw_sections):
+        soal_asli = sec.get("soal", [])
         judul = (sec.get("nama_bagian") or "").lower()
         petunjuk = (sec.get("petunjuk") or "").lower()
 
-        # 1. Buang bagian jika judul atau petunjuknya mengandung kalimat Tahap Akhir / Doa / Selesai
-        if any(k in judul or k in petunjuk for k in CLOSING_SECTION_KEYWORDS):
-            continue
+        # Jika bagian ini memiliki > 1 soal, ini PASTI bagian soal ujian.
+        # Kita hanya membuang butir konfirmasi 'KLIK SELESAI' jika kebetulan diselipkan di akhir.
+        valid_soal = [q for q in soal_asli if not is_closing_question(q)]
 
-        # 2. Saring butir soal di dalam bagian dari pertanyaan konfirmasi "KLIK SELESAI"
-        valid_soal = [q for q in sec.get("soal", []) if not is_closing_question(q)]
-
-        # 3. Jika ini bagian paling akhir dan hanya punya 1 soal dengan <= 1 opsi, abaikan
-        if idx == total_sec - 1 and len(valid_soal) == 1:
-            if len(valid_soal[0].get("opsi", [])) <= 1 and valid_soal[0].get("tipe") == "pilihan_ganda":
+        # Jika ini bagian paling akhir dan sejak awal hanya berisi <= 1 soal,
+        # cek apakah judulnya 'tahap akhir' atau soalnya adalah konfirmasi selesai
+        if idx == total_sec - 1 and len(soal_asli) <= 1:
+            if "tahap akhir" in judul or "tahap akhir" in petunjuk or "akhiri dengan doa" in petunjuk:
+                continue
+            if len(valid_soal) == 1 and len(valid_soal[0].get("opsi", [])) <= 1 and valid_soal[0].get("tipe") == "pilihan_ganda":
                 continue
 
+        # Simpan bagian selama masih memiliki soal valid
         if valid_soal:
             sec_copy = copy.deepcopy(sec)
             sec_copy["soal"] = valid_soal
             filtered_sections.append(sec_copy)
 
-    # Urutkan ulang nomor soal (untuk pemetaan LJK & Kunci Jawaban)
+    # Pengaman Fallback: Jika karena alasan tertentu hasil filter kosong padahal raw_sections ada isinya,
+    # kembalikan seluruh bagian yang memiliki soal agar dokumen tidak pernah kosong.
+    if not filtered_sections and raw_sections:
+        filtered_sections = [copy.deepcopy(s) for s in raw_sections if s.get("soal")]
+
+    # Urutkan ulang nomor soal (untuk kebutuhan Lembar Jawaban & Kunci Jawaban)
     global_no = 1
     for sec in filtered_sections:
-        for local_no, q in enumerate(sec["soal"], start=1):
+        for local_no, q in enumerate(sec.get("soal", []), start=1):
             q["no"] = local_no
             q["no_global"] = global_no
             global_no += 1
@@ -145,7 +151,7 @@ def convert_docx_to_pdf(docx_path: str, output_dir: str) -> Optional[str]:
 
 
 def strip_legacy_numbering_tags(docx_path: str) -> None:
-    """Menghapus tag penomoran otomatis jika pengguna masih memakai template versi lama."""
+    """Menghapus tag penomoran otomatis pada template Naskah Soal."""
     doc_obj = Document(docx_path)
     patterns = [
         r"\{\{\s*item\.no_global\s*\}\}\.\s*",
@@ -177,8 +183,16 @@ def strip_legacy_numbering_tags(docx_path: str) -> None:
     doc_obj.save(docx_path)
 
 
+def clear_header_completely(header_obj) -> None:
+    """Menghapus seluruh teks, gambar logo, dan baris kosong pada objek Header Word."""
+    hdr_el = header_obj._element
+    for child in list(hdr_el):
+        hdr_el.remove(child)
+    hdr_el.append(OxmlElement("w:p"))
+
+
 def configure_header_first_page_only(docx_obj) -> None:
-    """Memastikan Header (Kop Surat) hanya tampil di halaman pertama saja."""
+    """Memastikan Kop Surat di Header hanya tampil di Halaman 1 dan bersih di Halaman 2 dst."""
     if not docx_obj.sections:
         return
 
@@ -209,16 +223,14 @@ def configure_header_first_page_only(docx_obj) -> None:
                 bool("".join(first_el.itertext()).strip())
                 or bool(first_el.findall(".//" + qn("w:tbl")))
                 or bool(first_el.findall(".//" + qn("w:drawing")))
+                or bool(first_el.findall(".//" + qn("w:pict")))
             )
         if not first_has_content:
             if first_hdr_ref is not None:
                 sectPr0.remove(first_hdr_ref)
             default_hdr_ref.set(qn("w:type"), "first")
         else:
-            for p in list(sec0.header.paragraphs):
-                p.text = ""
-            for tbl in list(sec0.header.tables):
-                tbl._element.getparent().remove(tbl._element)
+            clear_header_completely(sec0.header)
 
     if sectPr0.find(qn("w:titlePg")) is None:
         sectPr0.append(OxmlElement("w:titlePg"))
@@ -229,10 +241,7 @@ def configure_header_first_page_only(docx_obj) -> None:
         if titlePg is not None:
             sPr.remove(titlePg)
         sec.header.is_linked_to_previous = False
-        for p in list(sec.header.paragraphs):
-            p.text = ""
-        for tbl in list(sec.header.tables):
-            tbl._element.getparent().remove(tbl._element)
+        clear_header_completely(sec.header)
 
 
 def lock_layout_prevent_page_split(docx_obj) -> None:
@@ -263,7 +272,6 @@ def lock_layout_prevent_page_split(docx_obj) -> None:
 
 
 def clean_option_prefix(text: str, expected_letter: str) -> str:
-    """Mencegah duplikasi huruf opsi (misal 'A. A. Jawaban') jika guru sudah mengetik huruf di Form."""
     t = text.strip()
     pattern = rf"^(\({expected_letter}\)|{expected_letter}[\.\)])\s+"
     return re.sub(pattern, "", t, flags=re.IGNORECASE).strip()
@@ -378,7 +386,7 @@ def extract_via_forms_api(form_id: str, creds) -> Dict[str, Any]:
             if in_first_section:
                 in_first_section = False
             else:
-                if current_section["soal"]:
+                if current_section["soal"] or current_section["nama_bagian"]:
                     raw_sections.append(current_section)
 
             current_section = {
@@ -905,9 +913,9 @@ with st.form("form_utama"):
 
 with st.expander("📖 Lihat Cara Pakai & Informasi Filter Otomatis"):
     st.markdown("""
-    * **Filter Bagian Otomatis:** Bagian 1 (Identitas) dan Bagian Terakhir (*"SELAMAT... KAMU SUDAH DI TAHAP AKHIR / KLIK SELESAI"*) otomatis dibuang. Seluruh bagian soal di tengahnya (baik hanya di Bagian 2 saja maupun terpecah di Bagian 2, 3, 4, dst.) otomatis dicetak.
+    * **Filter Bagian Otomatis:** Bagian 1 (Identitas) dan Bagian Terakhir (*"SELAMAT... KAMU SUDAH DI TAHAP AKHIR / KLIK SELESAI"*) otomatis dibuang tanpa memengaruhi bagian soal utama.
     * **Tanpa Penomoran Otomatis:** Teks pertanyaan dicetak sesuai isi Form tanpa tambahan nomor urut otomatis.
-    * **Header Halaman 1 Saja:** Jika template memiliki Header Word (Kop Surat), sistem otomatis menguncinya agar hanya tampil di halaman pertama.
+    * **Header Halaman 1 Saja:** Kop Surat di Header Word otomatis dikunci agar hanya tampil di halaman pertama.
     """)
 
 if submit_btn:
