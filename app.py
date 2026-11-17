@@ -14,9 +14,9 @@ from typing import Any, Dict, List, Optional
 import requests
 import streamlit as st
 from docx import Document
-from docx.shared import Mm
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.shared import Mm
 from docxtpl import DocxTemplate, InlineImage
 from streamlit_pdf_viewer import pdf_viewer
 
@@ -31,9 +31,77 @@ except ImportError:
 ALPHABETS = list(string.ascii_uppercase)
 pdf_lock = threading.Lock()
 
+# Kata kunci penanda Bagian Terakhir (Konfirmasi Selesai)
+CLOSING_SECTION_KEYWORDS = [
+    "tahap akhir",
+    "cek kembali",
+    "akhiri dengan doa",
+    "klik selesai",
+    "yakin dengan jawabanmu",
+]
+
 
 # ==============================================================================
-# 1. UTILITAS SISTEM, HEADER HALAMAN 1, & PENGUNCI HALAMAN
+# 1. FILTER BAGIAN PENUTUP ("TAHAP AKHIR / KLIK SELESAI")
+# ==============================================================================
+
+def is_closing_question(q: Dict[str, Any]) -> bool:
+    """Mendeteksi apakah suatu butir pertanyaan adalah tombol konfirmasi 'KLIK SELESAI'."""
+    q_text = (q.get("pertanyaan") or "").lower()
+    if any(k in q_text for k in ["klik selesai", "yakin dengan jawabanmu", "tahap akhir"]):
+        return True
+
+    opsi = q.get("opsi", [])
+    if len(opsi) == 1:
+        opt_text = (opsi[0].get("teks") or "").strip().lower()
+        if opt_text in {"selesai", "a. selesai", "ya", "kirim", "submit"} or "selesai" in opt_text:
+            return True
+
+    return False
+
+
+def filter_valid_exam_sections(raw_sections: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Membuang bagian penutup ('SELAMAT... TAHAP AKHIR / KLIK SELESAI') 
+    dan menomori ulang no_global untuk kebutuhan Lembar Jawaban (LJK).
+    """
+    filtered_sections = []
+    total_sec = len(raw_sections)
+
+    for idx, sec in enumerate(raw_sections):
+        judul = (sec.get("nama_bagian") or "").lower()
+        petunjuk = (sec.get("petunjuk") or "").lower()
+
+        # 1. Buang bagian jika judul atau petunjuknya mengandung kalimat Tahap Akhir / Doa / Selesai
+        if any(k in judul or k in petunjuk for k in CLOSING_SECTION_KEYWORDS):
+            continue
+
+        # 2. Saring butir soal di dalam bagian dari pertanyaan konfirmasi "KLIK SELESAI"
+        valid_soal = [q for q in sec.get("soal", []) if not is_closing_question(q)]
+
+        # 3. Jika ini bagian paling akhir dan hanya punya 1 soal dengan <= 1 opsi, abaikan
+        if idx == total_sec - 1 and len(valid_soal) == 1:
+            if len(valid_soal[0].get("opsi", [])) <= 1 and valid_soal[0].get("tipe") == "pilihan_ganda":
+                continue
+
+        if valid_soal:
+            sec_copy = copy.deepcopy(sec)
+            sec_copy["soal"] = valid_soal
+            filtered_sections.append(sec_copy)
+
+    # Urutkan ulang nomor soal (untuk pemetaan LJK & Kunci Jawaban)
+    global_no = 1
+    for sec in filtered_sections:
+        for local_no, q in enumerate(sec["soal"], start=1):
+            q["no"] = local_no
+            q["no_global"] = global_no
+            global_no += 1
+
+    return filtered_sections
+
+
+# ==============================================================================
+# 2. UTILITAS SISTEM, HEADER HALAMAN 1, & PENGUNCI HALAMAN
 # ==============================================================================
 
 def get_libreoffice_command() -> List[str]:
@@ -77,10 +145,7 @@ def convert_docx_to_pdf(docx_path: str, output_dir: str) -> Optional[str]:
 
 
 def strip_legacy_numbering_tags(docx_path: str) -> None:
-    """
-    Menghapus tag penomoran otomatis ({{ item.no_global }}., {{ b.sub_no }}., dll.)
-    secara otomatis jika pengguna mengunggah file template versi lama.
-    """
+    """Menghapus tag penomoran otomatis jika pengguna masih memakai template versi lama."""
     doc_obj = Document(docx_path)
     patterns = [
         r"\{\{\s*item\.no_global\s*\}\}\.\s*",
@@ -113,10 +178,7 @@ def strip_legacy_numbering_tags(docx_path: str) -> None:
 
 
 def configure_header_first_page_only(docx_obj) -> None:
-    """
-    Memastikan jika template memiliki Header (Kop Surat di area Header Word),
-    header tersebut hanya muncul di Halaman 1 saja dan tidak berulang di halaman 2 dst.
-    """
+    """Memastikan Header (Kop Surat) hanya tampil di halaman pertama saja."""
     if not docx_obj.sections:
         return
 
@@ -131,7 +193,6 @@ def configure_header_first_page_only(docx_obj) -> None:
         elif ref.get(qn("w:type")) == "first":
             first_hdr_ref = ref
 
-    # Cek apakah header default berisi teks, tabel, atau gambar/logo
     has_default_content = False
     if default_hdr_ref is not None:
         hdr_el = sec0.header._element
@@ -154,18 +215,14 @@ def configure_header_first_page_only(docx_obj) -> None:
                 sectPr0.remove(first_hdr_ref)
             default_hdr_ref.set(qn("w:type"), "first")
         else:
-            # Jika first_page_header sudah ada isinya, kosongkan default header agar halaman 2+ bersih
             for p in list(sec0.header.paragraphs):
                 p.text = ""
             for tbl in list(sec0.header.tables):
                 tbl._element.getparent().remove(tbl._element)
 
-    # Aktifkan Different First Page (<w:titlePg/>) pada section pertama
     if sectPr0.find(qn("w:titlePg")) is None:
         sectPr0.append(OxmlElement("w:titlePg"))
 
-    # Untuk section lanjutan (misal section 2 kolom setelah Continuous Break),
-    # matikan warisan header agar di halaman 2 dst benar-benar bersih tanpa header
     for sec in docx_obj.sections[1:]:
         sPr = sec._sectPr
         titlePg = sPr.find(qn("w:titlePg"))
@@ -191,7 +248,6 @@ def lock_layout_prevent_page_split(docx_obj) -> None:
     for table in docx_obj.tables:
         for row_idx, row in enumerate(table.rows):
             trPr = row._tr.get_or_add_trPr()
-            # Matikan tblHeader (Repeat Header Rows) agar header tabel tidak berulang di halaman baru
             tblHeader = trPr.find(qn("w:tblHeader"))
             if tblHeader is not None:
                 trPr.remove(tblHeader)
@@ -244,7 +300,7 @@ def find_image_url(data: Any) -> Optional[str]:
 
 
 # ==============================================================================
-# 2. KONEKSI GOOGLE SERVICE ACCOUNT (OPSI C - FOLDER DRIVE & KUNCI OTOMATIS)
+# 3. KONEKSI GOOGLE SERVICE ACCOUNT (OPSI C - FOLDER DRIVE & KUNCI OTOMATIS)
 # ==============================================================================
 
 def get_google_credentials():
@@ -299,7 +355,7 @@ def extract_form_id_from_url(url_or_id: str) -> Optional[str]:
 
 
 # ==============================================================================
-# 3. EKSTRAKSI VIA GOOGLE FORMS API (LOMPATI BAGIAN 1 IDENTITAS)
+# 4. EKSTRAKSI VIA GOOGLE FORMS API & LINK PUBLIK
 # ==============================================================================
 
 def extract_via_forms_api(form_id: str, creds) -> Dict[str, Any]:
@@ -311,29 +367,19 @@ def extract_via_forms_api(form_id: str, creds) -> Dict[str, Any]:
     form_desc = info.get("description") or ""
     items = form_data.get("items", [])
 
-    # Deteksi apakah form memiliki lebih dari 1 bagian (ada pageBreakItem)
     has_multiple_sections = any("pageBreakItem" in it for it in items)
-    # Jika punya banyak bagian, lompati Bagian 1 (Identitas) dan mulai di Bagian 2
     in_first_section = has_multiple_sections
 
-    daftar_bagian = []
-    current_section = {
-        "nama_bagian": "",
-        "petunjuk": "",
-        "soal": []
-    }
-    global_counter = 1
-    total_poin = 0
+    raw_sections = []
+    current_section = {"nama_bagian": "", "petunjuk": "", "soal": []}
 
     for item in items:
-        # A. Deteksi Pembatas Bagian (Page Break -> Masuk ke Bagian 2, 3, dst.)
         if "pageBreakItem" in item:
             if in_first_section:
-                # Baru saja melewati Bagian 1 (Identitas), sekarang masuk Bagian 2
                 in_first_section = False
             else:
                 if current_section["soal"]:
-                    daftar_bagian.append(current_section)
+                    raw_sections.append(current_section)
 
             current_section = {
                 "nama_bagian": item.get("title") or "",
@@ -342,11 +388,9 @@ def extract_via_forms_api(form_id: str, creds) -> Dict[str, Any]:
             }
             continue
 
-        # Lompati seluruh item jika masih berada di Bagian 1 (Identitas)
         if in_first_section:
             continue
 
-        # B. Deteksi Soal Kisi / Grid (questionGroupItem)
         if "questionGroupItem" in item:
             group = item["questionGroupItem"]
             q_title = item.get("title") or ""
@@ -393,9 +437,6 @@ def extract_via_forms_api(form_id: str, creds) -> Dict[str, Any]:
                     "poin": r_poin
                 })
 
-            total_poin += group_poin
-            nomor_di_bagian = len(current_section["soal"]) + 1
-
             cols_lower = [c.lower() for c in columns]
             opsi_matriks_standar = {"a", "b", "c", "d", "1", "2", "3", "4"}
 
@@ -411,24 +452,24 @@ def extract_via_forms_api(form_id: str, creds) -> Dict[str, Any]:
                         "is_kunci": bool(r["kunci_teks"])
                     })
                 current_section["soal"].append({
-                    "no": nomor_di_bagian, "no_global": global_counter, "pertanyaan": q_title,
-                    "tipe": "pg_kompleks", "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
+                    "pertanyaan": q_title, "tipe": "pg_kompleks",
+                    "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
                     "ada_opsi": True, "opsi_bergambar": False, "opsi": pgk_opts,
                     "baris": [], "kolom_header": [], "kiri": [], "kanan": [],
                     "poin": group_poin, "kunci_teks": ""
                 })
             elif len(columns) == 2 and any(k in cols_lower for k in ["benar", "salah", "b", "s", "true", "false", "ya", "tidak"]):
                 current_section["soal"].append({
-                    "no": nomor_di_bagian, "no_global": global_counter, "pertanyaan": q_title,
-                    "tipe": "benar_salah", "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
+                    "pertanyaan": q_title, "tipe": "benar_salah",
+                    "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
                     "ada_opsi": False, "opsi_bergambar": False, "opsi": [],
                     "baris": rows, "kolom_header": columns, "kiri": [], "kanan": [],
                     "poin": group_poin, "kunci_teks": ""
                 })
             elif len(columns) <= 4 and all(c.lower() in opsi_matriks_standar for c in columns):
                 current_section["soal"].append({
-                    "no": nomor_di_bagian, "no_global": global_counter, "pertanyaan": q_title,
-                    "tipe": "kisi_pilihan_ganda", "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
+                    "pertanyaan": q_title, "tipe": "kisi_pilihan_ganda",
+                    "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
                     "ada_opsi": False, "opsi_bergambar": False, "opsi": [],
                     "baris": rows, "kolom_header": columns, "kiri": [], "kanan": [],
                     "poin": group_poin, "kunci_teks": ""
@@ -442,16 +483,14 @@ def extract_via_forms_api(form_id: str, creds) -> Dict[str, Any]:
                     for i, col_text in enumerate(columns)
                 ]
                 current_section["soal"].append({
-                    "no": nomor_di_bagian, "no_global": global_counter, "pertanyaan": q_title,
-                    "tipe": "menjodohkan", "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
+                    "pertanyaan": q_title, "tipe": "menjodohkan",
+                    "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
                     "ada_opsi": False, "opsi_bergambar": False, "opsi": [],
                     "baris": [], "kolom_header": columns, "kiri": rows, "kanan": pilihan_kanan,
                     "poin": group_poin, "kunci_teks": ""
                 })
-            global_counter += 1
             continue
 
-        # C. Deteksi Soal Tunggal (questionItem)
         if "questionItem" in item:
             q_item = item["questionItem"]
             q_obj = q_item.get("question", {})
@@ -462,7 +501,6 @@ def extract_via_forms_api(form_id: str, creds) -> Dict[str, Any]:
 
             grading = q_obj.get("grading", {})
             poin = grading.get("pointValue", 0)
-            total_poin += poin
             correct_vals = [
                 ans.get("value", "").strip()
                 for ans in grading.get("correctAnswers", {}).get("answers", [])
@@ -492,28 +530,20 @@ def extract_via_forms_api(form_id: str, creds) -> Dict[str, Any]:
 
                 tipe_soal = "pg_kompleks" if c_type == "CHECKBOX" else "pilihan_ganda"
 
-            nomor_di_bagian = len(current_section["soal"]) + 1
             current_section["soal"].append({
-                "no": nomor_di_bagian,
-                "no_global": global_counter,
-                "pertanyaan": q_text,
-                "tipe": tipe_soal,
-                "img_bytes": q_img_bytes,
-                "ada_gambar": q_img_bytes is not None,
+                "pertanyaan": q_text, "tipe": tipe_soal,
+                "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
                 "ada_opsi": len(options) > 0,
                 "opsi_bergambar": any(o["ada_gambar"] for o in options),
-                "opsi": options,
-                "baris": [],
-                "kolom_header": [],
-                "kiri": [],
-                "kanan": [],
-                "poin": poin,
-                "kunci_teks": ", ".join(correct_vals)
+                "opsi": options, "baris": [], "kolom_header": [], "kiri": [], "kanan": [],
+                "poin": poin, "kunci_teks": ", ".join(correct_vals)
             })
-            global_counter += 1
 
-    if current_section["soal"]:
-        daftar_bagian.append(current_section)
+    if current_section["soal"] or current_section["nama_bagian"]:
+        raw_sections.append(current_section)
+
+    daftar_bagian = filter_valid_exam_sections(raw_sections)
+    total_poin = sum(q.get("poin", 0) for sec in daftar_bagian for q in sec["soal"])
 
     return {
         "judul_form": form_title,
@@ -522,10 +552,6 @@ def extract_via_forms_api(form_id: str, creds) -> Dict[str, Any]:
         "daftar_bagian": daftar_bagian
     }
 
-
-# ==============================================================================
-# 4. EKSTRAKSI VIA LINK PUBLIK (LOMPATI BAGIAN 1 IDENTITAS)
-# ==============================================================================
 
 def extract_via_public_html(form_url: str) -> Dict[str, Any]:
     clean_url = form_url.strip().split("?")[0]
@@ -546,27 +572,23 @@ def extract_via_public_html(form_url: str) -> Dict[str, Any]:
     form_desc = raw_data[1][0] or ""
     raw_items = raw_data[1][1] or []
 
-    # Cek apakah form memiliki lebih dari 1 bagian (Tipe 8 = Section Break)
     has_multiple_sections = any(it and len(it) >= 4 and it[3] == 8 for it in raw_items)
-    # Jika punya banyak bagian, lompati Bagian 1 (Identitas) dan mulai di Bagian 2
     in_first_section = has_multiple_sections
 
-    daftar_bagian = []
+    raw_sections = []
     current_section = {"nama_bagian": "", "petunjuk": "", "soal": []}
-    global_counter = 1
 
     for item in raw_items:
         if not item or len(item) < 4:
             continue
         item_type = item[3]
 
-        # A. Pembatas Bagian (Tipe 8 -> Masuk Bagian 2, 3, dst.)
         if item_type == 8:
             if in_first_section:
                 in_first_section = False
             else:
-                if current_section["soal"]:
-                    daftar_bagian.append(current_section)
+                if current_section["soal"] or current_section["nama_bagian"]:
+                    raw_sections.append(current_section)
 
             current_section = {
                 "nama_bagian": item[1] or "",
@@ -575,11 +597,9 @@ def extract_via_public_html(form_url: str) -> Dict[str, Any]:
             }
             continue
 
-        # Lompati semua item pada Bagian 1 (Identitas)
         if in_first_section:
             continue
 
-        # B. Soal Kisi / Grid (Tipe 7)
         if item_type == 7 and len(item) >= 5 and item[4]:
             q_title = item[1] or ""
             rows_data = item[4] or []
@@ -600,16 +620,12 @@ def extract_via_public_html(form_url: str) -> Dict[str, Any]:
                     "sub_no": chr(97 + idx) if idx < 26 else str(idx + 1),
                     "no_angka": str(idx + 1),
                     "teks": row_text.strip(),
-                    "is_benar": False,
-                    "is_salah": False,
-                    "kunci_idx": -1,
-                    "kunci_huruf": "",
-                    "kunci_teks": ""
+                    "is_benar": False, "is_salah": False,
+                    "kunci_idx": -1, "kunci_huruf": "", "kunci_teks": ""
                 })
 
             cols_lower = [c.lower() for c in columns]
             opsi_matriks_standar = {"a", "b", "c", "d", "1", "2", "3", "4"}
-            nomor_di_bagian = len(current_section["soal"]) + 1
 
             if len(columns) == 1:
                 pgk_opts = []
@@ -618,27 +634,25 @@ def extract_via_public_html(form_url: str) -> Dict[str, Any]:
                     pgk_opts.append({
                         "huruf": letter,
                         "teks": clean_option_prefix(b["teks"], letter),
-                        "img_bytes": None,
-                        "ada_gambar": False,
-                        "is_kunci": False
+                        "img_bytes": None, "ada_gambar": False, "is_kunci": False
                     })
                 current_section["soal"].append({
-                    "no": nomor_di_bagian, "no_global": global_counter, "pertanyaan": q_title,
-                    "tipe": "pg_kompleks", "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
+                    "pertanyaan": q_title, "tipe": "pg_kompleks",
+                    "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
                     "ada_opsi": True, "opsi_bergambar": False, "opsi": pgk_opts,
                     "baris": [], "kolom_header": [], "kiri": [], "kanan": [], "poin": 0, "kunci_teks": ""
                 })
             elif len(columns) == 2 and any(k in cols_lower for k in ["benar", "salah", "b", "s", "true", "false", "ya", "tidak"]):
                 current_section["soal"].append({
-                    "no": nomor_di_bagian, "no_global": global_counter, "pertanyaan": q_title,
-                    "tipe": "benar_salah", "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
+                    "pertanyaan": q_title, "tipe": "benar_salah",
+                    "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
                     "ada_opsi": False, "opsi_bergambar": False, "opsi": [],
                     "baris": rows, "kolom_header": columns, "kiri": [], "kanan": [], "poin": 0, "kunci_teks": ""
                 })
             elif len(columns) <= 4 and all(c.lower() in opsi_matriks_standar for c in columns):
                 current_section["soal"].append({
-                    "no": nomor_di_bagian, "no_global": global_counter, "pertanyaan": q_title,
-                    "tipe": "kisi_pilihan_ganda", "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
+                    "pertanyaan": q_title, "tipe": "kisi_pilihan_ganda",
+                    "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
                     "ada_opsi": False, "opsi_bergambar": False, "opsi": [],
                     "baris": rows, "kolom_header": columns, "kiri": [], "kanan": [], "poin": 0, "kunci_teks": ""
                 })
@@ -651,15 +665,13 @@ def extract_via_public_html(form_url: str) -> Dict[str, Any]:
                     for i, col_text in enumerate(columns)
                 ]
                 current_section["soal"].append({
-                    "no": nomor_di_bagian, "no_global": global_counter, "pertanyaan": q_title,
-                    "tipe": "menjodohkan", "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
+                    "pertanyaan": q_title, "tipe": "menjodohkan",
+                    "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
                     "ada_opsi": False, "opsi_bergambar": False, "opsi": [],
                     "baris": [], "kolom_header": columns, "kiri": rows, "kanan": pilihan_kanan, "poin": 0, "kunci_teks": ""
                 })
-            global_counter += 1
             continue
 
-        # C. Soal Standar (PG, PG Kompleks, Isian)
         if len(item) >= 5 and item[4]:
             q_text = item[1] or ""
             q_img_url = find_image_url(item[1:4])
@@ -685,18 +697,18 @@ def extract_via_public_html(form_url: str) -> Dict[str, Any]:
 
             ada_opsi = len(options) > 0
             tipe_soal = "pg_kompleks" if (item_type == 4 and ada_opsi) else ("pilihan_ganda" if ada_opsi else "isian")
-            nomor_di_bagian = len(current_section["soal"]) + 1
 
             current_section["soal"].append({
-                "no": nomor_di_bagian, "no_global": global_counter, "pertanyaan": q_text,
-                "tipe": tipe_soal, "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
+                "pertanyaan": q_text, "tipe": tipe_soal,
+                "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
                 "ada_opsi": ada_opsi, "opsi_bergambar": any(o["ada_gambar"] for o in options),
                 "opsi": options, "baris": [], "kolom_header": [], "kiri": [], "kanan": [], "poin": 0, "kunci_teks": ""
             })
-            global_counter += 1
 
-    if current_section["soal"]:
-        daftar_bagian.append(current_section)
+    if current_section["soal"] or current_section["nama_bagian"]:
+        raw_sections.append(current_section)
+
+    daftar_bagian = filter_valid_exam_sections(raw_sections)
 
     return {
         "judul_form": form_title,
@@ -874,7 +886,7 @@ with st.form("form_utama"):
     st.markdown("""
     <div style="margin-bottom: 0.5rem;">
         <span style="font-size: 1.05rem; font-weight: 700; color: #0f172a;">Konfigurasi Dokumen</span>
-        <p style="font-size: 0.8rem; color: #64748b; margin-top: 2px;">Bagian 1 (Identitas) di Google Form otomatis dilompati. Ekstraksi dimulai dari Bagian 2.</p>
+        <p style="font-size: 0.8rem; color: #64748b; margin-top: 2px;">Bagian 1 (Identitas) dan Bagian Akhir (Konfirmasi Selesai) otomatis dilewati.</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -891,9 +903,9 @@ with st.form("form_utama"):
 
     submit_btn = st.form_submit_button("✨ Generate Dokumen Siap Cetak", use_container_width=True, type="primary")
 
-with st.expander("📖 Lihat Cara Pakai & Informasi Template"):
+with st.expander("📖 Lihat Cara Pakai & Informasi Filter Otomatis"):
     st.markdown("""
-    * **Otomatis Lompati Identitas:** Bagian 1 pada Google Form diabaikan dan aplikasi langsung memproses mulai dari Bagian 2.
+    * **Filter Bagian Otomatis:** Bagian 1 (Identitas) dan Bagian Terakhir (*"SELAMAT... KAMU SUDAH DI TAHAP AKHIR / KLIK SELESAI"*) otomatis dibuang. Seluruh bagian soal di tengahnya (baik hanya di Bagian 2 saja maupun terpecah di Bagian 2, 3, 4, dst.) otomatis dicetak.
     * **Tanpa Penomoran Otomatis:** Teks pertanyaan dicetak sesuai isi Form tanpa tambahan nomor urut otomatis.
     * **Header Halaman 1 Saja:** Jika template memiliki Header Word (Kop Surat), sistem otomatis menguncinya agar hanya tampil di halaman pertama.
     """)
@@ -905,7 +917,7 @@ if submit_btn:
     elif not tpl_naskah and not tpl_ljk:
         st.error("Mohon unggah minimal satu file Template Word (Template Naskah Soal atau Template Lembar Jawaban).")
     else:
-        with st.spinner("Sedang mengekstrak soal mulai Bagian 2, mengunduh gambar, & menyusun dokumen..."):
+        with st.spinner("Sedang mengekstrak bagian soal, mengunduh gambar, & menyusun dokumen..."):
             try:
                 form_id = extract_form_id_from_url(target_input)
                 if creds and form_id:
@@ -926,7 +938,6 @@ if submit_btn:
                         with open(p_tpl_soal, "wb") as f:
                             f.write(tpl_naskah.getbuffer())
 
-                        # Bersihkan tag penomoran otomatis jika pengguna memakai file template versi lama
                         strip_legacy_numbering_tags(p_tpl_soal)
 
                         doc_soal = DocxTemplate(p_tpl_soal)
