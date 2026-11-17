@@ -1,4 +1,5 @@
 import copy
+import html
 import io
 import json
 import os
@@ -306,6 +307,40 @@ def find_image_url(data: Any) -> Optional[str]:
                 return found
     return None
 
+def extract_html_images_by_item(html_text: str, raw_items: list) -> Dict[int, List[str]]:
+    """
+    Memetakan ID item Google Form (item[0]) ke daftar URL gambar asli (googleusercontent.com)
+    yang dirender pada tag <img> di blok HTML masing-masing soal.
+    """
+    html_body = html_text.split("FB_PUBLIC_LOAD_DATA_")[0]
+    item_positions = []
+
+    for it in raw_items:
+        if not it or not isinstance(it, list) or not it[0]:
+            continue
+        item_id = it[0]
+        for marker in [f'data-item-id="{item_id}"', f"[{item_id},", f"&quot;{item_id}&quot;"]:
+            pos = html_body.find(marker)
+            if pos != -1:
+                item_positions.append((pos, item_id))
+                break
+
+    item_positions.sort(key=lambda x: x[0])
+    img_map: Dict[int, List[str]] = {}
+    img_pattern = re.compile(
+        r'<img[^>]+src=["\'](https://[^"\']*(?:googleusercontent\.com|ggpht\.com|drive\.google\.com)[^"\']+)["\']',
+        re.IGNORECASE
+    )
+
+    for idx, (start_pos, item_id) in enumerate(item_positions):
+        end_pos = item_positions[idx + 1][0] if idx + 1 < len(item_positions) else len(html_body)
+        chunk = html_body[start_pos:end_pos]
+        urls = [html.unescape(u) for u in img_pattern.findall(chunk)]
+        if urls:
+            img_map[item_id] = urls
+
+    return img_map
+
 
 # ==============================================================================
 # 3. KONEKSI GOOGLE SERVICE ACCOUNT (OPSI C - FOLDER DRIVE & KUNCI OTOMATIS)
@@ -397,6 +432,11 @@ def extract_via_forms_api(form_id: str, creds) -> Dict[str, Any]:
             continue
 
         if in_first_section:
+            continue
+        if "imageItem" in item:
+            img_uri = item["imageItem"].get("image", {}).get("contentUri")
+            if img_uri:
+                q_img_stream = download_image_to_stream(img_uri)
             continue
 
         if "questionGroupItem" in item:
@@ -586,6 +626,9 @@ def extract_via_public_html(form_url: str) -> Dict[str, Any]:
     raw_sections = []
     current_section = {"nama_bagian": "", "petunjuk": "", "soal": []}
 
+    html_img_map = extract_html_images_by_item(resp.text, raw_items)
+    pending_standalone_img = None
+
     for item in raw_items:
         if not item or len(item) < 4:
             continue
@@ -608,11 +651,21 @@ def extract_via_public_html(form_url: str) -> Dict[str, Any]:
         if in_first_section:
             continue
 
+        # --- TAMBAHKAN BLOK INI (Menangkap item Gambar Mandiri / Tipe 6 di atas soal) ---
+        if item_type == 6:
+            imgs = html_img_map.get(item[0], [])
+            img_url = imgs[0] if imgs else find_image_url(item)
+            if img_url:
+                pending_standalone_img = download_image_to_stream(img_url)
+            continue
+
         if item_type == 7 and len(item) >= 5 and item[4]:
             q_title = item[1] or ""
             rows_data = item[4] or []
-            q_img_url = find_image_url(item[1:4])
-            q_img_bytes = download_image_to_stream(q_img_url) if q_img_url else None
+            item_imgs = html_img_map.get(item[0], [])
+            q_img_url = item_imgs[0] if item_imgs else find_image_url(item)
+            q_img_bytes = download_image_to_stream(q_img_url) if q_img_url else pending_standalone_img
+            pending_standalone_img = None
 
             columns = []
             if rows_data and len(rows_data[0]) > 1 and rows_data[0][1]:
@@ -682,27 +735,44 @@ def extract_via_public_html(form_url: str) -> Dict[str, Any]:
 
         if len(item) >= 5 and item[4]:
             q_text = item[1] or ""
-            q_img_url = find_image_url(item[1:4])
-            q_img_bytes = download_image_to_stream(q_img_url) if q_img_url else None
+            item_imgs = list(html_img_map.get(item[0], []))
+
+            choice_data = item[4][0]
+            raw_opt_list = choice_data[1] if (len(choice_data) > 1 and choice_data[1]) else []
+            n_opt_imgs = sum(1 for o in raw_opt_list if o and len(o) > 5 and o[5])
+
+            # Ambil URL gambar pertanyaan utama dari blok HTML soal
+            q_img_url = None
+            if item_imgs and (len(item_imgs) > n_opt_imgs or (len(item) > 6 and item[6])):
+                q_img_url = item_imgs.pop(0)
+            else:
+                q_img_url = find_image_url(item)
+
+            q_img_bytes = download_image_to_stream(q_img_url) if q_img_url else pending_standalone_img
+            pending_standalone_img = None
 
             options = []
-            choice_data = item[4][0]
-            if len(choice_data) > 1 and choice_data[1]:
-                for idx, opt_item in enumerate(choice_data[1]):
-                    if not opt_item:
-                        continue
-                    raw_opt_text = str(opt_item[0] or "").strip()
-                    letter = ALPHABETS[idx] if idx < len(ALPHABETS) else f"({idx+1})"
-                    opt_img_url = find_image_url(opt_item)
-                    opt_img_bytes = download_image_to_stream(opt_img_url) if opt_img_url else None
-                    options.append({
-                        "huruf": letter,
-                        "teks": clean_option_prefix(raw_opt_text, letter),
-                        "img_bytes": opt_img_bytes,
-                        "ada_gambar": opt_img_bytes is not None,
-                        "is_kunci": False
-                    })
+            for idx, opt_item in enumerate(raw_opt_list):
+                if not opt_item:
+                    continue
+                raw_opt_text = str(opt_item[0] or "").strip()
+                letter = ALPHABETS[idx] if idx < len(ALPHABETS) else f"({idx+1})"
 
+                # Ambil URL gambar opsi jawaban jika opsi tersebut memiliki gambar
+                if len(opt_item) > 5 and opt_item[5] and item_imgs:
+                    opt_img_url = item_imgs.pop(0)
+                else:
+                    opt_img_url = find_image_url(opt_item)
+
+                opt_img_bytes = download_image_to_stream(opt_img_url) if opt_img_url else None
+                options.append({
+                    "huruf": letter,
+                    "teks": clean_option_prefix(raw_opt_text, letter),
+                    "img_bytes": opt_img_bytes,
+                    "ada_gambar": opt_img_bytes is not None,
+                    "is_kunci": False
+                })
+            
             ada_opsi = len(options) > 0
             tipe_soal = "pg_kompleks" if (item_type == 4 and ada_opsi) else ("pilihan_ganda" if ada_opsi else "isian")
 
