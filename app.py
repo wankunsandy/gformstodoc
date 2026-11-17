@@ -538,7 +538,7 @@ def extract_via_forms_api(form_id: str, creds) -> Dict[str, Any]:
         if "imageItem" in item:
             img_uri = item["imageItem"].get("image", {}).get("contentUri")
             if img_uri:
-                q_img_stream = download_image_to_stream(img_uri)
+                pending_api_img = download_image_to_stream(img_uri)
             continue
 
         if "questionGroupItem" in item:
