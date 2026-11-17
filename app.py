@@ -73,8 +73,7 @@ def filter_valid_exam_sections(raw_sections: List[Dict[str, Any]]) -> List[Dict[
         judul = (sec.get("nama_bagian") or "").lower()
         petunjuk = (sec.get("petunjuk") or "").lower()
 
-        # Jika bagian ini memiliki > 1 soal, ini PASTI bagian soal ujian.
-        # Kita hanya membuang butir konfirmasi 'KLIK SELESAI' jika kebetulan diselipkan di akhir.
+        # Saring butir konfirmasi 'KLIK SELESAI' jika ada
         valid_soal = [q for q in soal_asli if not is_closing_question(q)]
 
         # Jika ini bagian paling akhir dan sejak awal hanya berisi <= 1 soal,
@@ -91,7 +90,7 @@ def filter_valid_exam_sections(raw_sections: List[Dict[str, Any]]) -> List[Dict[
             sec_copy["soal"] = valid_soal
             filtered_sections.append(sec_copy)
 
-    # Pengaman Fallback: Jika karena alasan tertentu hasil filter kosong padahal raw_sections ada isinya,
+    # Pengaman Fallback: Jika hasil filter kosong padahal raw_sections ada isinya,
     # kembalikan seluruh bagian yang memiliki soal agar dokumen tidak pernah kosong.
     if not filtered_sections and raw_sections:
         filtered_sections = [copy.deepcopy(s) for s in raw_sections if s.get("soal")]
@@ -108,7 +107,7 @@ def filter_valid_exam_sections(raw_sections: List[Dict[str, Any]]) -> List[Dict[
 
 
 # ==============================================================================
-# 2. UTILITAS SISTEM, HEADER HALAMAN 1, & PENGUNCI HALAMAN
+# 2. UTILITAS SISTEM, HEADER HALAMAN 1, PENGUNCI HALAMAN, & EKSTRAKTOR GAMBAR
 # ==============================================================================
 
 def get_libreoffice_command() -> List[str]:
@@ -278,11 +277,18 @@ def clean_option_prefix(text: str, expected_letter: str) -> str:
     return re.sub(pattern, "", t, flags=re.IGNORECASE).strip()
 
 
-def download_image_to_stream(img_url: str) -> Optional[io.BytesIO]:
+def download_image_to_stream(img_url: str, session: Optional[requests.Session] = None) -> Optional[io.BytesIO]:
+    """Mengunduh gambar dari URL Google Forms ke memory buffer."""
+    if not img_url:
+        return None
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(img_url, headers=headers, timeout=8)
-        if resp.status_code == 200:
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://docs.google.com/",
+        }
+        getter = session.get if session else requests.get
+        resp = getter(img_url, headers=headers, timeout=10)
+        if resp.status_code == 200 and resp.content:
             return io.BytesIO(resp.content)
     except Exception:
         pass
@@ -307,68 +313,111 @@ def find_image_url(data: Any) -> Optional[str]:
                 return found
     return None
 
-def extract_html_images_by_item(html_text: str, raw_items: list) -> Dict[int, List[str]]:
-    """Mengekstrak URL gambar dari tag <img> pada satu halaman HTML bagian Google Form."""
-    html_body = html_text.split("FB_PUBLIC_LOAD_DATA_")[0].split("</form>")[0]
-    item_positions = []
 
+def extract_hidden_input(html_text: str, name: str, default: str = "") -> str:
+    """Mengambil nilai <input type='hidden' name='...'> langsung dari HTML Google Form."""
+    p1 = rf'<input[^>]+name=["\']{re.escape(name)}["\'][^>]+value=["\']([^"\']*)["\']'
+    m = re.search(p1, html_text, re.IGNORECASE)
+    if not m:
+        p2 = rf'<input[^>]+value=["\']([^"\']*)["\'][^>]+name=["\']{re.escape(name)}["\']'
+        m = re.search(p2, html_text, re.IGNORECASE)
+    return html.unescape(m.group(1)) if m else default
+
+
+def extract_html_images_by_item(html_text: str, raw_items: list) -> Dict[int, List[str]]:
+    """
+    Memecah HTML berdasarkan blok <div role="listitem"> agar gambar yang berada 
+    di atas maupun di bawah atribut data-item-id tetap tertangkap utuh.
+    """
+    form_chunk = html_text.split("</form>")[0]
+    listitem_blocks = re.split(r'<div[^>]+role=["\']listitem["\'][^>]*>', form_chunk, flags=re.IGNORECASE)[1:]
+
+    img_pattern = re.compile(
+        r'<img[^>]+(?:src|data-src)=["\'](https://[^"\']*(?:googleusercontent\.com|ggpht\.com|drive\.google\.com)[^"\']+)["\']',
+        re.IGNORECASE
+    )
+
+    item_markers = []
     for it in raw_items:
         if not it or not isinstance(it, list) or not it[0]:
             continue
         item_id = it[0]
-        for marker in [f'data-item-id="{item_id}"', f"%.@.[{item_id},", f"[{item_id},&quot;"]:
-            pos = html_body.find(marker)
-            if pos != -1:
-                item_positions.append((pos, item_id))
-                break
+        markers = [
+            f'data-item-id="{item_id}"',
+            f"data-item-id='{item_id}'",
+            f"%.@.[{item_id},",
+            f"[{item_id},",
+            f"&quot;{item_id}&quot;",
+        ]
+        if len(it) > 4 and isinstance(it[4], list):
+            for sub_q in it[4]:
+                if isinstance(sub_q, list) and sub_q and sub_q[0]:
+                    eid = sub_q[0]
+                    markers.append(f"entry.{eid}")
+                    markers.append(f"[{eid},")
+        item_markers.append((item_id, markers))
 
-    item_positions.sort(key=lambda x: x[0])
     img_map: Dict[int, List[str]] = {}
-    img_pattern = re.compile(
-        r'<img[^>]+src=["\'](https://[^"\']*(?:googleusercontent\.com|ggpht\.com|drive\.google\.com)[^"\']+)["\']',
-        re.IGNORECASE
-    )
-
-    for idx, (start_pos, item_id) in enumerate(item_positions):
-        end_pos = item_positions[idx + 1][0] if idx + 1 < len(item_positions) else len(html_body)
-        chunk = html_body[start_pos:end_pos]
+    for block in listitem_blocks:
         urls = []
-        for u in img_pattern.findall(chunk):
+        for u in img_pattern.findall(block):
             clean_u = html.unescape(u)
             if clean_u not in urls:
                 urls.append(clean_u)
-        if urls:
-            img_map[item_id] = urls
+        if not urls:
+            continue
+
+        for item_id, markers in item_markers:
+            if any(m in block for m in markers):
+                img_map[item_id] = urls
+                break
 
     return img_map
 
 
 def build_dummy_answer_for_subq(sub_q: list, item_type: int) -> str:
-    """Membuat isian dummy otomatis (termasuk membaca opsi Kelas/Token) agar bisa melewati Bagian 1."""
-    # 1. Jika soal memiliki opsi pilihan (Dropdown Kelas, Pilihan Ganda, Kotak Centang)
+    """Membuat isian dummy valid (termasuk opsi Kelas & validasi Token/Angka/Panjang Teks)."""
+    # 1. Jika soal memiliki opsi pilihan, pilih opsi pertama yang bukan 'Submit Form' (-2)
     if len(sub_q) > 1 and sub_q[1] and isinstance(sub_q[1], list):
+        for opt in sub_q[1]:
+            if opt and opt[0] is not None and str(opt[0]).strip() != "":
+                if len(opt) > 2 and opt[2] == -2:
+                    continue
+                return str(opt[0]).strip()
         for opt in sub_q[1]:
             if opt and opt[0] is not None and str(opt[0]).strip() != "":
                 return str(opt[0]).strip()
 
-    # 2. Jika soal isian memiliki validasi khusus (misal Token atau Angka)
+    # 2. Jika soal isian memiliki validasi khusus (Angka, Teks, Regex, Panjang Karakter)
     if len(sub_q) > 4 and sub_q[4] and isinstance(sub_q[4], list):
         try:
             rule = sub_q[4][0]
             v_type, v_op = rule[0], rule[1]
             v_params = rule[2] if len(rule) > 2 and rule[2] else []
-            if v_params and v_params[0] is not None:
-                p0 = str(v_params[0]).strip()
-                if v_type == 1:  # Validasi angka
-                    num = float(p0)
-                    if v_op == 1:
-                        return str(int(num + 1))
-                    elif v_op == 3:
-                        return str(int(num - 1))
-                    return str(int(num)) if num.is_integer() else str(num)
-                return p0.strip("^$")
-            if v_type == 1:
-                return "1"
+            p0 = str(v_params[0]).strip() if (v_params and v_params[0] is not None) else ""
+
+            if v_type == 1:  # Validasi Angka
+                num = float(p0) if p0 else 1.0
+                if v_op in (1, 6):
+                    num += 1
+                elif v_op in (3, 8):
+                    num -= 1
+                return str(int(num)) if num.is_integer() else str(num)
+            elif v_type == 2:  # Validasi Teks
+                if v_op == 101:
+                    return "JawabanValid123"
+                if v_op == 102:
+                    return "siswa@smpn50sby.sch.id"
+                if v_op == 103:
+                    return "https://smpn50sby.sch.id"
+                return p0 or "1"
+            elif v_type == 4:  # Validasi Regex (Token)
+                if v_op in (300, 302):
+                    return "JawabanValid123"
+                return p0.strip("^$") or "1"
+            elif v_type == 6:  # Validasi Panjang Karakter (Min/Max Length)
+                n_len = int(p0) if p0.isdigit() else 1
+                return "1" * max(1, n_len) if v_op == 203 else "1"
         except Exception:
             pass
 
@@ -379,14 +428,18 @@ def build_dummy_answer_for_subq(sub_q: list, item_type: int) -> str:
     return "1"
 
 
-def fetch_all_sections_images(viewform_url: str, first_html: str, raw_items: list) -> Dict[int, List[str]]:
+def fetch_all_sections_images(
+    session: requests.Session,
+    viewform_url: str,
+    first_html: str,
+    raw_items: list
+) -> Dict[int, List[str]]:
     """
-    Mensimulasikan klik tombol 'Berikutnya' (POST /formResponse) untuk membuka
-    Bagian 2, 3, dst. sehingga seluruh gambar soal di balik halaman identitas dapat diambil.
+    Membuka Bagian 2, 3, dst. secara berurutan dengan mengirimkan field entry.<id>
+    dan pageHistory dari halaman sebelumnya agar server Google merender HTML beserta gambar soal.
     """
     img_map = extract_html_images_by_item(first_html, raw_items)
 
-    # Pisahkan item berdasarkan pembatas bagian (Tipe 8 = Section Break)
     pages_items: List[list] = [[]]
     for it in raw_items:
         if it and len(it) >= 4 and it[3] == 8:
@@ -397,23 +450,46 @@ def fetch_all_sections_images(viewform_url: str, first_html: str, raw_items: lis
     if len(pages_items) <= 1:
         return img_map
 
-    # Cari URL endpoint /formResponse dan token sesi fbzx
-    action_match = re.search(r'<form[^>]+action=["\'](https://[^"\']+formResponse)["\']', first_html)
-    form_response_url = action_match.group(1) if action_match else re.sub(r"/viewform.*$", "/formResponse", viewform_url)
+    action_match = re.search(r'<form[^>]+action=["\'](https://[^"\']+formResponse)["\']', first_html, re.IGNORECASE)
+    form_response_url = (
+        html.unescape(action_match.group(1))
+        if action_match
+        else re.sub(r"/viewform.*$", "/formResponse", viewform_url)
+    )
 
-    fbzx_match = re.search(r'name="fbzx"\s+value="([^"]+)"', first_html)
-    fbzx = fbzx_match.group(1) if fbzx_match else "0"
-
-    session = requests.Session()
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Referer": viewform_url,
+        "Origin": "https://docs.google.com",
     }
 
+    current_html = first_html
     accumulated_answers = []
-    # Buka halaman demi halaman mulai dari Bagian 2 (page index 1)
-    for page_idx in range(1, len(pages_items)):
-        for it in pages_items[page_idx - 1]:
+
+    # Transisi bertahap dari halaman p (mulai p=0 / Bagian 1) menuju halaman p+1 (Bagian 2, dst.)
+    for p in range(len(pages_items) - 1):
+        fbzx = extract_hidden_input(current_html, "fbzx", "0")
+        fvv = extract_hidden_input(current_html, "fvv", "1")
+        page_history = extract_hidden_input(current_html, "pageHistory", ",".join(str(i) for i in range(p + 1)))
+        partial_resp = extract_hidden_input(
+            current_html,
+            "partialResponse",
+            json.dumps([accumulated_answers if accumulated_answers else None, None, fbzx])
+        )
+
+        post_data: Dict[str, Any] = {
+            "fvv": fvv,
+            "partialResponse": partial_resp,
+            "pageHistory": page_history,
+            "fbzx": fbzx,
+            "continue": "1",
+        }
+
+        if 'name="emailAddress"' in current_html or "emailAddress" in current_html:
+            post_data["emailAddress"] = "siswa@smpn50sby.sch.id"
+
+        # Isi seluruh pertanyaan pada halaman p sebagai entry.<entry_id>
+        for it in pages_items[p]:
             if not it or len(it) < 5 or not it[4] or not isinstance(it[4], list):
                 continue
             item_type = it[3]
@@ -422,27 +498,30 @@ def fetch_all_sections_images(viewform_url: str, first_html: str, raw_items: lis
                     continue
                 entry_id = sub_q[0]
                 dummy_val = build_dummy_answer_for_subq(sub_q, item_type)
+
+                if item_type == 9:
+                    post_data[f"entry.{entry_id}_year"] = "2026"
+                    post_data[f"entry.{entry_id}_month"] = "1"
+                    post_data[f"entry.{entry_id}_day"] = "1"
+                elif item_type == 10:
+                    post_data[f"entry.{entry_id}_hour"] = "08"
+                    post_data[f"entry.{entry_id}_minute"] = "00"
+                else:
+                    post_data[f"entry.{entry_id}"] = dummy_val
+
                 accumulated_answers.append([None, entry_id, [dummy_val], 0])
 
-        page_history_str = ",".join(str(i) for i in range(page_idx + 1))
-        partial_response_json = json.dumps([accumulated_answers, None, fbzx])
-
-        post_data = {
-            "fvv": "1",
-            "partialResponse": partial_response_json,
-            "pageHistory": page_history_str,
-            "fbzx": fbzx,
-            "continue": "1",
-        }
-
         try:
-            resp_page = session.post(form_response_url, data=post_data, headers=headers, timeout=10)
+            resp_page = session.post(form_response_url, data=post_data, headers=headers, timeout=12)
             if resp_page.status_code == 200:
-                img_map.update(extract_html_images_by_item(resp_page.text, raw_items))
+                new_imgs = extract_html_images_by_item(resp_page.text, raw_items)
+                img_map.update(new_imgs)
+                current_html = resp_page.text
         except Exception:
             pass
 
     return img_map
+
 
 # ==============================================================================
 # 3. KONEKSI GOOGLE SERVICE ACCOUNT (OPSI C - FOLDER DRIVE & KUNCI OTOMATIS)
@@ -517,6 +596,7 @@ def extract_via_forms_api(form_id: str, creds) -> Dict[str, Any]:
 
     raw_sections = []
     current_section = {"nama_bagian": "", "petunjuk": "", "soal": []}
+    pending_api_img = None
 
     for item in items:
         if "pageBreakItem" in item:
@@ -531,10 +611,13 @@ def extract_via_forms_api(form_id: str, creds) -> Dict[str, Any]:
                 "petunjuk": item.get("description") or "",
                 "soal": []
             }
+            pending_api_img = None
             continue
 
         if in_first_section:
             continue
+
+        # Tangkap item gambar mandiri (Standalone Image) di atas soal
         if "imageItem" in item:
             img_uri = item["imageItem"].get("image", {}).get("contentUri")
             if img_uri:
@@ -545,7 +628,8 @@ def extract_via_forms_api(form_id: str, creds) -> Dict[str, Any]:
             group = item["questionGroupItem"]
             q_title = item.get("title") or ""
             q_img_url = group.get("image", {}).get("contentUri")
-            q_img_bytes = download_image_to_stream(q_img_url) if q_img_url else None
+            q_img_bytes = download_image_to_stream(q_img_url) if q_img_url else pending_api_img
+            pending_api_img = None
 
             columns = [
                 opt.get("value", "").strip()
@@ -647,7 +731,8 @@ def extract_via_forms_api(form_id: str, creds) -> Dict[str, Any]:
             q_text = item.get("title") or ""
 
             q_img_url = q_item.get("image", {}).get("contentUri")
-            q_img_bytes = download_image_to_stream(q_img_url) if q_img_url else None
+            q_img_bytes = download_image_to_stream(q_img_url) if q_img_url else pending_api_img
+            pending_api_img = None
 
             grading = q_obj.get("grading", {})
             poin = grading.get("pointValue", 0)
@@ -707,8 +792,9 @@ def extract_via_public_html(form_url: str) -> Dict[str, Any]:
     clean_url = re.sub(r"/(edit|viewform|formResponse)/?$", "", form_url.strip().split("?")[0])
     clean_url = clean_url.rstrip("/") + "/viewform"
 
+    session = requests.Session()
     headers = {"User-Agent": "Mozilla/5.0"}
-    resp = requests.get(clean_url, headers=headers, timeout=10)
+    resp = session.get(clean_url, headers=headers, timeout=10)
     resp.raise_for_status()
 
     pattern = r"FB_PUBLIC_LOAD_DATA_\s*=\s*(.*?);</script>"
@@ -727,7 +813,7 @@ def extract_via_public_html(form_url: str) -> Dict[str, Any]:
     raw_sections = []
     current_section = {"nama_bagian": "", "petunjuk": "", "soal": []}
 
-    html_img_map = fetch_all_sections_images(resp.url, resp.text, raw_items)
+    html_img_map = fetch_all_sections_images(session, resp.url, resp.text, raw_items)
     pending_standalone_img = None
 
     for item in raw_items:
@@ -747,17 +833,18 @@ def extract_via_public_html(form_url: str) -> Dict[str, Any]:
                 "petunjuk": item[2] or "",
                 "soal": []
             }
+            pending_standalone_img = None
             continue
 
         if in_first_section:
             continue
 
-        # --- TAMBAHKAN BLOK INI (Menangkap item Gambar Mandiri / Tipe 6 di atas soal) ---
+        # Tangkap item Gambar Mandiri (Tipe 6) di atas soal
         if item_type == 6:
             imgs = html_img_map.get(item[0], [])
             img_url = imgs[0] if imgs else find_image_url(item)
             if img_url:
-                pending_standalone_img = download_image_to_stream(img_url)
+                pending_standalone_img = download_image_to_stream(img_url, session)
             continue
 
         if item_type == 7 and len(item) >= 5 and item[4]:
@@ -765,7 +852,7 @@ def extract_via_public_html(form_url: str) -> Dict[str, Any]:
             rows_data = item[4] or []
             item_imgs = html_img_map.get(item[0], [])
             q_img_url = item_imgs[0] if item_imgs else find_image_url(item)
-            q_img_bytes = download_image_to_stream(q_img_url) if q_img_url else pending_standalone_img
+            q_img_bytes = download_image_to_stream(q_img_url, session) if q_img_url else pending_standalone_img
             pending_standalone_img = None
 
             columns = []
@@ -849,7 +936,7 @@ def extract_via_public_html(form_url: str) -> Dict[str, Any]:
             else:
                 q_img_url = find_image_url(item)
 
-            q_img_bytes = download_image_to_stream(q_img_url) if q_img_url else pending_standalone_img
+            q_img_bytes = download_image_to_stream(q_img_url, session) if q_img_url else pending_standalone_img
             pending_standalone_img = None
 
             options = []
@@ -865,7 +952,7 @@ def extract_via_public_html(form_url: str) -> Dict[str, Any]:
                 else:
                     opt_img_url = find_image_url(opt_item)
 
-                opt_img_bytes = download_image_to_stream(opt_img_url) if opt_img_url else None
+                opt_img_bytes = download_image_to_stream(opt_img_url, session) if opt_img_url else None
                 options.append({
                     "huruf": letter,
                     "teks": clean_option_prefix(raw_opt_text, letter),
@@ -873,7 +960,7 @@ def extract_via_public_html(form_url: str) -> Dict[str, Any]:
                     "ada_gambar": opt_img_bytes is not None,
                     "is_kunci": False
                 })
-            
+
             ada_opsi = len(options) > 0
             tipe_soal = "pg_kompleks" if (item_type == 4 and ada_opsi) else ("pilihan_ganda" if ada_opsi else "isian")
 
