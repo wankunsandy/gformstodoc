@@ -308,18 +308,15 @@ def find_image_url(data: Any) -> Optional[str]:
     return None
 
 def extract_html_images_by_item(html_text: str, raw_items: list) -> Dict[int, List[str]]:
-    """
-    Memetakan ID item Google Form (item[0]) ke daftar URL gambar asli (googleusercontent.com)
-    yang dirender pada tag <img> di blok HTML masing-masing soal.
-    """
-    html_body = html_text.split("FB_PUBLIC_LOAD_DATA_")[0]
+    """Mengekstrak URL gambar dari tag <img> pada satu halaman HTML bagian Google Form."""
+    html_body = html_text.split("FB_PUBLIC_LOAD_DATA_")[0].split("</form>")[0]
     item_positions = []
 
     for it in raw_items:
         if not it or not isinstance(it, list) or not it[0]:
             continue
         item_id = it[0]
-        for marker in [f'data-item-id="{item_id}"', f"[{item_id},", f"&quot;{item_id}&quot;"]:
+        for marker in [f'data-item-id="{item_id}"', f"%.@.[{item_id},", f"[{item_id},&quot;"]:
             pos = html_body.find(marker)
             if pos != -1:
                 item_positions.append((pos, item_id))
@@ -335,12 +332,117 @@ def extract_html_images_by_item(html_text: str, raw_items: list) -> Dict[int, Li
     for idx, (start_pos, item_id) in enumerate(item_positions):
         end_pos = item_positions[idx + 1][0] if idx + 1 < len(item_positions) else len(html_body)
         chunk = html_body[start_pos:end_pos]
-        urls = [html.unescape(u) for u in img_pattern.findall(chunk)]
+        urls = []
+        for u in img_pattern.findall(chunk):
+            clean_u = html.unescape(u)
+            if clean_u not in urls:
+                urls.append(clean_u)
         if urls:
             img_map[item_id] = urls
 
     return img_map
 
+
+def build_dummy_answer_for_subq(sub_q: list, item_type: int) -> str:
+    """Membuat isian dummy otomatis (termasuk membaca opsi Kelas/Token) agar bisa melewati Bagian 1."""
+    # 1. Jika soal memiliki opsi pilihan (Dropdown Kelas, Pilihan Ganda, Kotak Centang)
+    if len(sub_q) > 1 and sub_q[1] and isinstance(sub_q[1], list):
+        for opt in sub_q[1]:
+            if opt and opt[0] is not None and str(opt[0]).strip() != "":
+                return str(opt[0]).strip()
+
+    # 2. Jika soal isian memiliki validasi khusus (misal Token atau Angka)
+    if len(sub_q) > 4 and sub_q[4] and isinstance(sub_q[4], list):
+        try:
+            rule = sub_q[4][0]
+            v_type, v_op = rule[0], rule[1]
+            v_params = rule[2] if len(rule) > 2 and rule[2] else []
+            if v_params and v_params[0] is not None:
+                p0 = str(v_params[0]).strip()
+                if v_type == 1:  # Validasi angka
+                    num = float(p0)
+                    if v_op == 1:
+                        return str(int(num + 1))
+                    elif v_op == 3:
+                        return str(int(num - 1))
+                    return str(int(num)) if num.is_integer() else str(num)
+                return p0.strip("^$")
+            if v_type == 1:
+                return "1"
+        except Exception:
+            pass
+
+    if item_type == 9:
+        return "2026-01-01"
+    if item_type == 10:
+        return "08:00"
+    return "1"
+
+
+def fetch_all_sections_images(viewform_url: str, first_html: str, raw_items: list) -> Dict[int, List[str]]:
+    """
+    Mensimulasikan klik tombol 'Berikutnya' (POST /formResponse) untuk membuka
+    Bagian 2, 3, dst. sehingga seluruh gambar soal di balik halaman identitas dapat diambil.
+    """
+    img_map = extract_html_images_by_item(first_html, raw_items)
+
+    # Pisahkan item berdasarkan pembatas bagian (Tipe 8 = Section Break)
+    pages_items: List[list] = [[]]
+    for it in raw_items:
+        if it and len(it) >= 4 and it[3] == 8:
+            pages_items.append([])
+        else:
+            pages_items[-1].append(it)
+
+    if len(pages_items) <= 1:
+        return img_map
+
+    # Cari URL endpoint /formResponse dan token sesi fbzx
+    action_match = re.search(r'<form[^>]+action=["\'](https://[^"\']+formResponse)["\']', first_html)
+    form_response_url = action_match.group(1) if action_match else re.sub(r"/viewform.*$", "/formResponse", viewform_url)
+
+    fbzx_match = re.search(r'name="fbzx"\s+value="([^"]+)"', first_html)
+    fbzx = fbzx_match.group(1) if fbzx_match else "0"
+
+    session = requests.Session()
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": viewform_url,
+    }
+
+    accumulated_answers = []
+    # Buka halaman demi halaman mulai dari Bagian 2 (page index 1)
+    for page_idx in range(1, len(pages_items)):
+        for it in pages_items[page_idx - 1]:
+            if not it or len(it) < 5 or not it[4] or not isinstance(it[4], list):
+                continue
+            item_type = it[3]
+            for sub_q in it[4]:
+                if not sub_q or not isinstance(sub_q, list) or not sub_q[0]:
+                    continue
+                entry_id = sub_q[0]
+                dummy_val = build_dummy_answer_for_subq(sub_q, item_type)
+                accumulated_answers.append([None, entry_id, [dummy_val], 0])
+
+        page_history_str = ",".join(str(i) for i in range(page_idx + 1))
+        partial_response_json = json.dumps([accumulated_answers, None, fbzx])
+
+        post_data = {
+            "fvv": "1",
+            "partialResponse": partial_response_json,
+            "pageHistory": page_history_str,
+            "fbzx": fbzx,
+            "continue": "1",
+        }
+
+        try:
+            resp_page = session.post(form_response_url, data=post_data, headers=headers, timeout=10)
+            if resp_page.status_code == 200:
+                img_map.update(extract_html_images_by_item(resp_page.text, raw_items))
+        except Exception:
+            pass
+
+    return img_map
 
 # ==============================================================================
 # 3. KONEKSI GOOGLE SERVICE ACCOUNT (OPSI C - FOLDER DRIVE & KUNCI OTOMATIS)
@@ -602,9 +704,8 @@ def extract_via_forms_api(form_id: str, creds) -> Dict[str, Any]:
 
 
 def extract_via_public_html(form_url: str) -> Dict[str, Any]:
-    clean_url = form_url.strip().split("?")[0]
-    if not clean_url.endswith("/viewform"):
-        clean_url = clean_url.rstrip("/") + "/viewform"
+    clean_url = re.sub(r"/(edit|viewform|formResponse)/?$", "", form_url.strip().split("?")[0])
+    clean_url = clean_url.rstrip("/") + "/viewform"
 
     headers = {"User-Agent": "Mozilla/5.0"}
     resp = requests.get(clean_url, headers=headers, timeout=10)
@@ -626,7 +727,7 @@ def extract_via_public_html(form_url: str) -> Dict[str, Any]:
     raw_sections = []
     current_section = {"nama_bagian": "", "petunjuk": "", "soal": []}
 
-    html_img_map = extract_html_images_by_item(resp.text, raw_items)
+    html_img_map = fetch_all_sections_images(resp.url, resp.text, raw_items)
     pending_standalone_img = None
 
     for item in raw_items:
