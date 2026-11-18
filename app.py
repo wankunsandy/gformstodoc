@@ -61,6 +61,19 @@ def is_closing_question(q: Dict[str, Any]) -> bool:
     return False
 
 
+IDENTITY_PATTERN = re.compile(
+    r"^\s*(nama(\s+(lengkap|siswa|peserta))?|kelas|rombel|mapel|mata\s+pelajaran|"
+    r"no\.?\s*absen|nomor\s+absen|absen|nis|nisn|no\.?\s*peserta|nomor\s+peserta|"
+    r"token|e-?mail|alamat\s+email|sekolah|asal\s+sekolah|tanggal(\s+ujian)?)\s*[:.]?\s*\*?\s*$",
+    re.IGNORECASE,
+)
+
+
+def is_identity_question(q: Dict[str, Any]) -> bool:
+    """True jika butir hanyalah isian identitas peserta (bukan soal ujian)."""
+    return bool(IDENTITY_PATTERN.match((q.get("pertanyaan") or "").strip()))
+
+
 def filter_valid_exam_sections(raw_sections: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Membuang bagian penutup ('SELAMAT... TAHAP AKHIR / KLIK SELESAI') 
@@ -71,6 +84,11 @@ def filter_valid_exam_sections(raw_sections: List[Dict[str, Any]]) -> List[Dict[
 
     for idx, sec in enumerate(raw_sections):
         soal_asli = sec.get("soal", [])
+
+        # Bagian identitas (Nama, Kelas, Mapel, No. Absen, Token, dst.) selalu dibuang,
+        # apa pun cara Form dibaca (multi-bagian, salinan satu halaman, atau API).
+        if soal_asli and all(is_identity_question(q) for q in soal_asli):
+            continue
         judul = (sec.get("nama_bagian") or "").lower()
         petunjuk = (sec.get("petunjuk") or "").lower()
 
