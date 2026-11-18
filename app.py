@@ -280,6 +280,7 @@ def clean_option_prefix(text: str, expected_letter: str) -> str:
 
 
 IMAGE_WARNINGS: List[str] = []
+IMAGE_DEBUG: Dict[str, Any] = {}
 
 
 def download_image_to_stream(img_url: str) -> Optional[io.BytesIO]:
@@ -300,6 +301,7 @@ def download_image_to_stream(img_url: str) -> Optional[io.BytesIO]:
             IMAGE_WARNINGS.append(f"Gagal mengunduh gambar (HTTP {resp.status_code}).")
             return None
 
+        IMAGE_DEBUG["gambar_terunduh"] = IMAGE_DEBUG.get("gambar_terunduh", 0) + 1
         img = Image.open(io.BytesIO(resp.content))
         img.load()
         if (img.format or "").upper() in {"PNG", "JPEG"}:
@@ -479,6 +481,26 @@ def fetch_all_sections_images(viewform_url: str, first_html: str, raw_items: lis
         pass
 
     img_map = extract_html_images_by_item(first_html, raw_items)
+
+    # ---- Data diagnosa gambar (ditampilkan di panel "Diagnosa gambar") ----
+    all_imgs = re.findall(r"<img\b[^>]*>", first_html, flags=re.IGNORECASE)
+    IMAGE_DEBUG.clear()
+    IMAGE_DEBUG.update({
+        "jumlah_tag_img_di_html": len(all_imgs),
+        "contoh_tag_img": [t[:300] for t in all_imgs[:8]],
+        "jumlah_item_di_form": len(raw_items),
+        "item_yang_ditemukan_di_html": sum(
+            1 for it in raw_items if it and isinstance(it, list) and it[0] and (
+                f'data-item-id="{it[0]}"' in first_html or f"%.@.[{it[0]}," in first_html
+                or f"[{it[0]},&quot;" in first_html)
+        ),
+        "item_tipe_gambar_(11)": sum(1 for it in raw_items if it and len(it) >= 4 and it[3] == 11),
+        "item_dengan_gambar_terpetakan": {str(k): len(v) for k, v in img_map.items()},
+        "jumlah_halaman_form": len(pages_items),
+        "ukuran_html": len(first_html),
+    })
+    IMAGE_DEBUG["_html"] = first_html
+
     if len(pages_items) <= 1:
         return img_map
 
@@ -1208,6 +1230,7 @@ if submit_btn:
         with st.spinner("Sedang mengekstrak bagian soal, mengunduh gambar, & menyusun dokumen..."):
             try:
                 IMAGE_WARNINGS.clear()
+                IMAGE_DEBUG.clear()
                 form_id = extract_form_id_from_url(target_input)
                 if creds and form_id:
                     raw_ctx = extract_via_forms_api(form_id, creds)
@@ -1277,6 +1300,11 @@ if submit_btn:
 
                 st.session_state["generated"] = True
                 st.session_state["image_warnings"] = list(dict.fromkeys(IMAGE_WARNINGS))
+                st.session_state["image_debug"] = dict(IMAGE_DEBUG)
+                st.session_state["image_debug"]["soal_dengan_gambar"] = sum(
+                    1 for sec in raw_ctx["daftar_bagian"] for q in sec["soal"]
+                    if q.get("img_bytes") or any(o.get("img_bytes") for o in q.get("opsi", []))
+                )
 
             except Exception as e:
                 st.session_state["generated"] = False
@@ -1296,6 +1324,19 @@ if st.session_state.get("generated"):
     img_warn = st.session_state.get("image_warnings") or []
     if img_warn:
         st.warning("⚠️ Sebagian gambar mungkin tidak ikut:\n\n" + "\n".join(f"- {w}" for w in img_warn))
+
+    dbg = st.session_state.get("image_debug") or {}
+    if dbg:
+        with st.expander("🔍 Diagnosa gambar"):
+            st.json({k: v for k, v in dbg.items() if not k.startswith("_")})
+            if dbg.get("_html"):
+                st.download_button(
+                    "⬇️ Unduh HTML Form (untuk analisis)",
+                    data=dbg["_html"].encode("utf-8"),
+                    file_name="form_page.html",
+                    mime="text/html",
+                    key="dl_debug_html",
+                )
 
     tab_labels = []
     if "naskah" in hasil:
