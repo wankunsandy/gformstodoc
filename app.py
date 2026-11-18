@@ -11,7 +11,7 @@ import sys
 import tempfile
 import threading
 import zipfile
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 import streamlit as st
@@ -835,6 +835,7 @@ def extract_via_forms_api(form_id: str, creds) -> Dict[str, Any]:
                         "is_kunci": bool(r["kunci_teks"])
                     })
                 current_section["soal"].append({
+                    "item_id": str(item.get("itemId") or ""),
                     "pertanyaan": q_title, "tipe": "pg_kompleks",
                     "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
                     "ada_opsi": True, "opsi_bergambar": False, "opsi": pgk_opts,
@@ -843,6 +844,7 @@ def extract_via_forms_api(form_id: str, creds) -> Dict[str, Any]:
                 })
             elif len(columns) == 2 and any(k in cols_lower for k in ["benar", "salah", "b", "s", "true", "false", "ya", "tidak"]):
                 current_section["soal"].append({
+                    "item_id": str(item.get("itemId") or ""),
                     "pertanyaan": q_title, "tipe": "benar_salah",
                     "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
                     "ada_opsi": False, "opsi_bergambar": False, "opsi": [],
@@ -851,6 +853,7 @@ def extract_via_forms_api(form_id: str, creds) -> Dict[str, Any]:
                 })
             elif len(columns) <= 4 and all(c.lower() in opsi_matriks_standar for c in columns):
                 current_section["soal"].append({
+                    "item_id": str(item.get("itemId") or ""),
                     "pertanyaan": q_title, "tipe": "kisi_pilihan_ganda",
                     "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
                     "ada_opsi": False, "opsi_bergambar": False, "opsi": [],
@@ -866,6 +869,7 @@ def extract_via_forms_api(form_id: str, creds) -> Dict[str, Any]:
                     for i, col_text in enumerate(columns)
                 ]
                 current_section["soal"].append({
+                    "item_id": str(item.get("itemId") or ""),
                     "pertanyaan": q_title, "tipe": "menjodohkan",
                     "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
                     "ada_opsi": False, "opsi_bergambar": False, "opsi": [],
@@ -915,6 +919,7 @@ def extract_via_forms_api(form_id: str, creds) -> Dict[str, Any]:
                 tipe_soal = "pg_kompleks" if c_type == "CHECKBOX" else "pilihan_ganda"
 
             current_section["soal"].append({
+                    "item_id": str(item.get("itemId") or ""),
                 "pertanyaan": q_text, "tipe": tipe_soal,
                 "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
                 "ada_opsi": len(options) > 0,
@@ -1043,6 +1048,7 @@ def extract_via_public_html(form_url: str) -> Dict[str, Any]:
                         "img_bytes": None, "ada_gambar": False, "is_kunci": False
                     })
                 current_section["soal"].append({
+                    "item_id": str(item[0]),
                     "pertanyaan": q_title, "tipe": "pg_kompleks",
                     "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
                     "ada_opsi": True, "opsi_bergambar": False, "opsi": pgk_opts,
@@ -1050,6 +1056,7 @@ def extract_via_public_html(form_url: str) -> Dict[str, Any]:
                 })
             elif len(columns) == 2 and any(k in cols_lower for k in ["benar", "salah", "b", "s", "true", "false", "ya", "tidak"]):
                 current_section["soal"].append({
+                    "item_id": str(item[0]),
                     "pertanyaan": q_title, "tipe": "benar_salah",
                     "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
                     "ada_opsi": False, "opsi_bergambar": False, "opsi": [],
@@ -1057,6 +1064,7 @@ def extract_via_public_html(form_url: str) -> Dict[str, Any]:
                 })
             elif len(columns) <= 4 and all(c.lower() in opsi_matriks_standar for c in columns):
                 current_section["soal"].append({
+                    "item_id": str(item[0]),
                     "pertanyaan": q_title, "tipe": "kisi_pilihan_ganda",
                     "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
                     "ada_opsi": False, "opsi_bergambar": False, "opsi": [],
@@ -1071,6 +1079,7 @@ def extract_via_public_html(form_url: str) -> Dict[str, Any]:
                     for i, col_text in enumerate(columns)
                 ]
                 current_section["soal"].append({
+                    "item_id": str(item[0]),
                     "pertanyaan": q_title, "tipe": "menjodohkan",
                     "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
                     "ada_opsi": False, "opsi_bergambar": False, "opsi": [],
@@ -1124,6 +1133,7 @@ def extract_via_public_html(form_url: str) -> Dict[str, Any]:
             tipe_soal = "pg_kompleks" if (item_type == 4 and ada_opsi) else ("pilihan_ganda" if ada_opsi else "isian")
 
             current_section["soal"].append({
+                    "item_id": str(item[0]),
                 "pertanyaan": q_text, "tipe": tipe_soal,
                 "img_bytes": q_img_bytes, "ada_gambar": q_img_bytes is not None,
                 "ada_opsi": ada_opsi, "opsi_bergambar": any(o["ada_gambar"] for o in options),
@@ -1164,6 +1174,239 @@ def build_context_for_doc(raw_context: Dict[str, Any], doc: DocxTemplate, mode_k
 
     ctx["daftar_pertanyaan"] = [q for sec in ctx["daftar_bagian"] for q in sec["soal"]]
     return ctx
+
+
+# ==============================================================================
+# 4b. KUNCI JAWABAN & SKOR (diisi guru / dimuat dari file JSON)
+# ==============================================================================
+
+KUNCI_FORMAT = "formprint-kunci-v1"
+TIPE_LABEL = {
+    "pilihan_ganda": "Pilihan Ganda",
+    "pg_kompleks": "PG Kompleks",
+    "benar_salah": "Benar / Salah",
+    "kisi_pilihan_ganda": "Kisi Pilihan Ganda",
+    "menjodohkan": "Menjodohkan",
+    "isian": "Isian / Uraian",
+}
+TIPE_URUT = ["pilihan_ganda", "pg_kompleks", "benar_salah", "kisi_pilihan_ganda", "menjodohkan", "isian"]
+
+
+def _norm(text: Any) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip().lower()
+
+
+def question_key(q: Dict[str, Any]) -> str:
+    """Kunci identitas soal yang stabil: ID butir Form, atau nomor jika tidak ada."""
+    return str(q.get("item_id") or f"no{q.get('no_global')}")
+
+
+def tipe_kunci(q: Dict[str, Any]) -> str:
+    t = q.get("tipe", "isian")
+    return t if t in TIPE_LABEL else "isian"
+
+
+def empty_key_entry(q: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "no": q.get("no_global"),
+        "tipe": tipe_kunci(q),
+        "judul": (q.get("pertanyaan") or "")[:120],
+        "poin": 0.0,
+        "pg": [],
+        "baris": [-1] * len(q.get("baris") or []),
+        "jodoh": [""] * len(q.get("kiri") or []),
+        "teks": "",
+    }
+
+
+def key_entry_from_question(q: Dict[str, Any]) -> Dict[str, Any]:
+    """Kunci yang sudah ada di data Form (mode Forms API)."""
+    e = empty_key_entry(q)
+    e["poin"] = float(q.get("poin") or 0)
+    t = e["tipe"]
+    if t in ("pilihan_ganda", "pg_kompleks"):
+        e["pg"] = [o["huruf"] for o in q.get("opsi", []) if o.get("is_kunci")]
+    elif t in ("benar_salah", "kisi_pilihan_ganda"):
+        e["baris"] = [int(b.get("kunci_idx", -1)) for b in q.get("baris", [])]
+    elif t == "menjodohkan":
+        e["jodoh"] = [k.get("kunci_huruf", "") or "" for k in q.get("kiri", [])]
+    else:
+        e["teks"] = q.get("kunci_teks", "") or ""
+    return e
+
+
+def entry_has_key(e: Dict[str, Any]) -> bool:
+    t = e.get("tipe")
+    if t in ("pilihan_ganda", "pg_kompleks"):
+        return bool(e.get("pg"))
+    if t in ("benar_salah", "kisi_pilihan_ganda"):
+        return bool(e.get("baris")) and all(i >= 0 for i in e["baris"])
+    if t == "menjodohkan":
+        return bool(e.get("jodoh")) and all(e["jodoh"])
+    return bool((e.get("teks") or "").strip())
+
+
+def init_key_state(raw_ctx: Dict[str, Any], previous: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
+    """
+    Menyusun daftar kunci untuk semua soal. Urutan prioritas:
+    kunci lama di sesi ini (jika soalnya sama) > kunci dari data Form > kosong.
+    """
+    previous = previous or {}
+    state: Dict[str, Dict[str, Any]] = {}
+    for sec in raw_ctx.get("daftar_bagian", []):
+        for q in sec.get("soal", []):
+            k = question_key(q)
+            base = key_entry_from_question(q)
+            old = previous.get(k)
+            if old and old.get("tipe") == base["tipe"] \
+                    and len(old.get("baris", [])) == len(base["baris"]) \
+                    and len(old.get("jodoh", [])) == len(base["jodoh"]):
+                base = dict(old)
+            base["no"] = q.get("no_global")
+            state[k] = base
+    return state
+
+
+def _match_option_letters(q: Dict[str, Any], values: List[str]) -> List[str]:
+    letters = []
+    for v in values:
+        for o in q.get("opsi", []):
+            if _norm(v) == _norm(o["teks"]) or _norm(clean_option_prefix(str(v), o["huruf"])) == _norm(o["teks"]):
+                if o["huruf"] not in letters:
+                    letters.append(o["huruf"])
+                break
+    return letters
+
+
+def merge_key_file(state: Dict[str, Dict[str, Any]], raw_ctx: Dict[str, Any], data: Dict[str, Any]) -> Tuple[int, int]:
+    """
+    Memuat file kunci ke state. Mendukung:
+      - file dari skrip GAS   (format 'formprint-gas-kunci-v1')
+      - file simpanan FormPrint (format 'formprint-kunci-v1')
+    Mengembalikan (jumlah soal terisi, jumlah butir file yang tidak cocok).
+    """
+    questions = [q for sec in raw_ctx.get("daftar_bagian", []) for q in sec.get("soal", [])]
+    by_id = {str(q.get("item_id")): q for q in questions if q.get("item_id")}
+    by_title: Dict[str, Dict[str, Any]] = {}
+    for q in questions:
+        by_title.setdefault(_norm(q.get("pertanyaan")), q)
+
+    terisi, tidak_cocok = 0, 0
+    fmt = data.get("format", "")
+
+    if fmt == KUNCI_FORMAT:
+        for k, e in (data.get("kunci") or {}).items():
+            q = by_id.get(k) or by_title.get(_norm(e.get("judul")))
+            if not q:
+                tidak_cocok += 1
+                continue
+            cur = state[question_key(q)]
+            if e.get("tipe") != cur["tipe"]:
+                tidak_cocok += 1
+                continue
+            new = dict(cur)
+            new["poin"] = float(e.get("poin") or 0)
+            new["pg"] = [h for h in e.get("pg", []) if any(o["huruf"] == h for o in q.get("opsi", []))]
+            if len(e.get("baris", [])) == len(cur["baris"]):
+                new["baris"] = [int(i) for i in e["baris"]]
+            if len(e.get("jodoh", [])) == len(cur["jodoh"]):
+                new["jodoh"] = [str(h) for h in e["jodoh"]]
+            new["teks"] = str(e.get("teks") or "")
+            state[question_key(q)] = new
+            terisi += 1
+        return terisi, tidak_cocok
+
+    if fmt == "formprint-gas-kunci-v1":
+        for it in data.get("items", []):
+            q = by_id.get(str(it.get("id"))) or by_title.get(_norm(it.get("judul")))
+            if not q:
+                tidak_cocok += 1
+                continue
+            cur = state[question_key(q)]
+            if it.get("poin"):
+                cur["poin"] = float(it["poin"])
+            if it.get("benar") and cur["tipe"] in ("pilihan_ganda", "pg_kompleks"):
+                cur["pg"] = _match_option_letters(q, it["benar"])
+            terisi += 1
+        return terisi, tidak_cocok
+
+    raise ValueError("Format file kunci tidak dikenali.")
+
+
+def export_key_file(state: Dict[str, Dict[str, Any]], judul_form: str) -> bytes:
+    return json.dumps(
+        {"format": KUNCI_FORMAT, "judul_form": judul_form, "kunci": state},
+        ensure_ascii=False, indent=2,
+    ).encode("utf-8")
+
+
+def _fmt_poin(p: float) -> Any:
+    return int(p) if float(p).is_integer() else round(p, 2)
+
+
+def apply_keys_to_context(raw_ctx: Dict[str, Any], state: Dict[str, Dict[str, Any]], default_poin: float = 0) -> Dict[str, Any]:
+    """Menyalin data Form dan mengisi kunci + skor dari state guru."""
+    ctx = copy.deepcopy(raw_ctx)
+    total = 0.0
+    for sec in ctx.get("daftar_bagian", []):
+        for q in sec.get("soal", []):
+            e = state.get(question_key(q)) or empty_key_entry(q)
+            poin = float(e.get("poin") or 0) or float(default_poin or 0)
+            q["poin"] = _fmt_poin(poin)
+            total += poin
+            t = e["tipe"]
+
+            if t in ("pilihan_ganda", "pg_kompleks"):
+                benar = set(e.get("pg") or [])
+                for o in q.get("opsi", []):
+                    o["is_kunci"] = o["huruf"] in benar
+                pilihan = [o for o in q.get("opsi", []) if o["is_kunci"]]
+                q["kunci_huruf"] = ", ".join(o["huruf"] for o in pilihan)
+                q["kunci_teks"] = ", ".join(f'{o["huruf"]}. {o["teks"]}' for o in pilihan)
+
+            elif t in ("benar_salah", "kisi_pilihan_ganda"):
+                headers = q.get("kolom_header") or []
+                for b, idx in zip(q.get("baris", []), e.get("baris") or []):
+                    idx = int(idx)
+                    b["kunci_idx"] = idx
+                    b["is_benar"] = idx == 0
+                    b["is_salah"] = idx == 1
+                    b["kunci_huruf"] = headers[idx] if 0 <= idx < len(headers) else ""
+                    b["kunci_teks"] = b["kunci_huruf"]
+
+            elif t == "menjodohkan":
+                kanan = {r["huruf"]: r["teks"] for r in q.get("kanan", [])}
+                for k, h in zip(q.get("kiri", []), e.get("jodoh") or []):
+                    k["kunci_huruf"] = h or ""
+                    k["kunci_teks"] = kanan.get(h, "") if h else ""
+
+            else:
+                q["kunci_teks"] = (e.get("teks") or "").strip()
+
+    ctx["total_poin"] = _fmt_poin(total)
+    return ctx
+
+
+def render_doc_bytes(tpl_bytes: bytes, ctx_raw: Dict[str, Any], mode_kunci: bool, judul_dokumen: str,
+                     out_name: str) -> Dict[str, Optional[bytes]]:
+    """Merender satu dokumen dari template (bytes) -> {'docx': ..., 'pdf': ...}."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        p_tpl = os.path.join(tmpdir, "tpl.docx")
+        p_out = os.path.join(tmpdir, out_name)
+        with open(p_tpl, "wb") as f:
+            f.write(tpl_bytes)
+        doc = DocxTemplate(p_tpl)
+        ctx = build_context_for_doc(ctx_raw, doc, mode_kunci=mode_kunci, judul_dokumen=judul_dokumen)
+        doc.render(ctx)
+        lock_layout_prevent_page_split(doc.docx)
+        doc.save(p_out)
+        fix_header_first_page_only_file(p_out)
+        with open(p_out, "rb") as f:
+            docx_b = f.read()
+        pdf_p = convert_docx_to_pdf(p_out, tmpdir)
+        pdf_b = open(pdf_p, "rb").read() if (pdf_p and os.path.exists(pdf_p)) else None
+    return {"docx": docx_b, "pdf": pdf_b}
+
 
 
 # ==============================================================================
@@ -1307,6 +1550,203 @@ if creds and drive_folder_id:
             idx_pilih = pilihan_nama.index(pilihan_user) - 1
             selected_drive_form_id = forms_list[idx_pilih]["id"]
 
+
+# ------------------------------------------------------------------------------
+# Panel Isi Kunci Jawaban & Skor (Tahap 2)
+# ------------------------------------------------------------------------------
+KOSONG = "—"
+
+
+def _w(k: str, suffix: str) -> str:
+    return f"kw_{k}_{suffix}"
+
+
+def seed_key_widgets(state: Dict[str, Dict[str, Any]], raw_ctx: Dict[str, Any]) -> None:
+    """Mengisi nilai awal semua isian di panel kunci dari state."""
+    for sec in raw_ctx.get("daftar_bagian", []):
+        for q in sec.get("soal", []):
+            k = question_key(q)
+            e = state.get(k) or empty_key_entry(q)
+            t = e["tipe"]
+            st.session_state[_w(k, "poin")] = float(e.get("poin") or 0)
+            if t == "pilihan_ganda":
+                st.session_state[_w(k, "pg")] = (e.get("pg") or [KOSONG])[0]
+            elif t == "pg_kompleks":
+                st.session_state[_w(k, "pgk")] = list(e.get("pg") or [])
+            elif t in ("benar_salah", "kisi_pilihan_ganda"):
+                headers = q.get("kolom_header") or []
+                for i, idx in enumerate(e.get("baris") or []):
+                    st.session_state[_w(k, f"r{i}")] = headers[idx] if 0 <= idx < len(headers) else KOSONG
+            elif t == "menjodohkan":
+                for i, h in enumerate(e.get("jodoh") or []):
+                    st.session_state[_w(k, f"j{i}")] = h or KOSONG
+            else:
+                st.session_state[_w(k, "teks")] = e.get("teks") or ""
+
+
+def read_key_widgets(state: Dict[str, Dict[str, Any]], raw_ctx: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Membaca isian guru di panel kunci kembali ke state."""
+    new_state = copy.deepcopy(state)
+    for sec in raw_ctx.get("daftar_bagian", []):
+        for q in sec.get("soal", []):
+            k = question_key(q)
+            e = new_state.setdefault(k, empty_key_entry(q))
+            t = e["tipe"]
+            e["poin"] = float(st.session_state.get(_w(k, "poin"), 0) or 0)
+            if t == "pilihan_ganda":
+                v = st.session_state.get(_w(k, "pg"), KOSONG)
+                e["pg"] = [] if v == KOSONG else [v]
+            elif t == "pg_kompleks":
+                e["pg"] = list(st.session_state.get(_w(k, "pgk"), []))
+            elif t in ("benar_salah", "kisi_pilihan_ganda"):
+                headers = q.get("kolom_header") or []
+                e["baris"] = []
+                for i in range(len(q.get("baris") or [])):
+                    v = st.session_state.get(_w(k, f"r{i}"), KOSONG)
+                    e["baris"].append(headers.index(v) if v in headers else -1)
+            elif t == "menjodohkan":
+                e["jodoh"] = []
+                for i in range(len(q.get("kiri") or [])):
+                    v = st.session_state.get(_w(k, f"j{i}"), KOSONG)
+                    e["jodoh"].append("" if v == KOSONG else v)
+            else:
+                e["teks"] = st.session_state.get(_w(k, "teks"), "") or ""
+    return new_state
+
+
+def _ringkas(teks: str, n: int = 90) -> str:
+    teks = re.sub(r"\s+", " ", teks or "").strip()
+    return teks if len(teks) <= n else teks[: n - 1] + "…"
+
+
+def render_key_panel() -> None:
+    raw_ctx = st.session_state["raw_ctx"]
+    state = st.session_state.get("kunci_state") or {}
+
+    st.markdown("---")
+    st.markdown("### 🔑 Isi Kunci Jawaban & Skor")
+
+    if not st.session_state.get("tpl_ljk_bytes"):
+        st.info("Unggah **Template Lembar Jawaban** lalu Generate ulang untuk membuat Kunci Jawaban Guru.")
+        return
+
+    st.caption(
+        "Tahap 2: isi kunci per nomor, lalu tekan **Generate Kunci Jawaban**. "
+        "Kunci PG/kotak centang/dropdown bisa dimuat otomatis dari file kunci skrip GAS."
+    )
+
+    # --- Muat file kunci (dari GAS atau simpanan sebelumnya) ---
+    up = st.file_uploader("Muat file kunci (.json dari GAS atau simpanan FormPrint)", type=["json"], key="up_kunci")
+    if up is not None:
+        sig = f"{up.name}-{up.size}"
+        if st.session_state.get("kunci_loaded_sig") != sig:
+            try:
+                data = json.loads(up.getvalue().decode("utf-8"))
+                terisi, tidak_cocok = merge_key_file(state, raw_ctx, data)
+                st.session_state["kunci_state"] = state
+                seed_key_widgets(state, raw_ctx)
+                st.session_state["kunci_loaded_sig"] = sig
+                msg = f"✅ Kunci dimuat untuk {terisi} soal."
+                if tidak_cocok:
+                    msg += f" {tidak_cocok} butir di file tidak cocok dengan soal Form ini (dilewati)."
+                st.session_state["kunci_load_msg"] = msg
+            except Exception as e:
+                st.session_state["kunci_load_msg"] = f"❌ File kunci tidak bisa dibaca: {e}"
+                st.session_state["kunci_loaded_sig"] = sig
+    if st.session_state.get("kunci_load_msg"):
+        st.caption(st.session_state["kunci_load_msg"])
+
+    # --- Kelompokkan soal per jenis ---
+    groups: Dict[str, List[Dict[str, Any]]] = {t: [] for t in TIPE_URUT}
+    for sec in raw_ctx.get("daftar_bagian", []):
+        for q in sec.get("soal", []):
+            groups[tipe_kunci(q)].append(q)
+
+    with st.form("form_kunci"):
+        st.number_input(
+            "Skor default untuk soal yang skornya masih 0",
+            min_value=0.0, step=0.5, key="kw_default_poin",
+            help="Dipakai untuk semua soal yang skornya belum diisi. Biarkan 0 jika tidak dipakai.",
+        )
+
+        for t in TIPE_URUT:
+            qs = groups[t]
+            if not qs:
+                continue
+            n_kosong = sum(1 for q in qs if not entry_has_key(state.get(question_key(q)) or empty_key_entry(q)))
+            label = f"{TIPE_LABEL[t]} — {len(qs)} soal" + (f" ({n_kosong} belum ada kunci)" if n_kosong else " ✓")
+            with st.expander(label, expanded=n_kosong > 0):
+                for q in qs:
+                    k = question_key(q)
+                    st.markdown(f"**No. {q.get('no_global')}** — {_ringkas(q.get('pertanyaan', ''))}")
+                    c_kunci, c_poin = st.columns([4, 1])
+                    with c_poin:
+                        st.number_input("Skor", min_value=0.0, step=0.5, key=_w(k, "poin"))
+                    with c_kunci:
+                        opsi = q.get("opsi", [])
+                        teks_opsi = {o["huruf"]: _ringkas(o["teks"], 50) for o in opsi}
+                        if t == "pilihan_ganda":
+                            st.selectbox(
+                                "Kunci", [KOSONG] + [o["huruf"] for o in opsi], key=_w(k, "pg"),
+                                format_func=lambda h, m=teks_opsi: h if h == KOSONG else f"{h}. {m.get(h, '')}",
+                            )
+                        elif t == "pg_kompleks":
+                            st.multiselect(
+                                "Kunci (boleh lebih dari satu)", [o["huruf"] for o in opsi], key=_w(k, "pgk"),
+                                format_func=lambda h, m=teks_opsi: f"{h}. {m.get(h, '')}",
+                            )
+                        elif t in ("benar_salah", "kisi_pilihan_ganda"):
+                            headers = q.get("kolom_header") or []
+                            for i, b in enumerate(q.get("baris") or []):
+                                lbl = f"({b.get('sub_no')})" if t == "benar_salah" else f"{b.get('no_angka')}."
+                                st.selectbox(f"{lbl} {_ringkas(b.get('teks', ''), 70)}", [KOSONG] + headers, key=_w(k, f"r{i}"))
+                        elif t == "menjodohkan":
+                            kanan = q.get("kanan") or []
+                            m_kanan = {r["huruf"]: _ringkas(r["teks"], 40) for r in kanan}
+                            for i, kr in enumerate(q.get("kiri") or []):
+                                st.selectbox(
+                                    f"{kr.get('no_angka')}. {_ringkas(kr.get('teks', ''), 70)}",
+                                    [KOSONG] + [r["huruf"] for r in kanan], key=_w(k, f"j{i}"),
+                                    format_func=lambda h, m=m_kanan: h if h == KOSONG else f"{h}. {m.get(h, '')}",
+                                )
+                        else:
+                            st.text_input("Kunci / pedoman jawaban", key=_w(k, "teks"))
+                    st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+
+        submit_kunci = st.form_submit_button("🔑 Generate Kunci Jawaban", use_container_width=True, type="primary")
+
+    if submit_kunci:
+        new_state = read_key_widgets(state, raw_ctx)
+        st.session_state["kunci_state"] = new_state
+        ctx = apply_keys_to_context(raw_ctx, new_state, st.session_state.get("kw_default_poin", 0))
+        kosong = [str(v["no"]) for v in sorted(new_state.values(), key=lambda v: v["no"] or 0) if not entry_has_key(v)]
+        with st.spinner("Menyusun Kunci Jawaban Guru..."):
+            try:
+                st.session_state["hasil_files"]["kunci_guru"] = render_doc_bytes(
+                    st.session_state["tpl_ljk_bytes"], ctx, True, "KUNCI JAWABAN & PEDOMAN SKOR", "Kunci_Jawaban_Guru.docx"
+                )
+                st.session_state["kunci_info"] = {"kosong": kosong, "total": ctx["total_poin"]}
+            except Exception as e:
+                st.error(f"Gagal membuat Kunci Jawaban: {e}")
+                return
+        st.rerun()
+
+    info = st.session_state.get("kunci_info")
+    if info:
+        if info["kosong"]:
+            st.warning("Nomor tanpa kunci (tercetak \"Sesuai pedoman penskoran guru\"): " + ", ".join(info["kosong"]))
+        st.success(f"Kunci Jawaban Guru sudah dibuat (tab 🔑 di atas). Total skor: {info['total']}")
+
+    st.download_button(
+        "💾 Simpan kunci (.json) untuk dipakai lagi",
+        data=export_key_file(st.session_state.get("kunci_state") or {}, raw_ctx.get("judul_form", "")),
+        file_name=f"kunci_{st.session_state.get('judul_naskah', 'form')}.json",
+        mime="application/json",
+        use_container_width=True,
+        key="dl_kunci_json",
+    )
+
+
 with st.form("form_utama"):
     st.markdown("""
     <div style="margin-bottom: 0.5rem;">
@@ -1333,6 +1773,7 @@ with st.expander("📖 Lihat Cara Pakai & Informasi Filter Otomatis"):
     * **Filter Bagian Otomatis:** Bagian 1 (Identitas) dan Bagian Terakhir (*"SELAMAT... KAMU SUDAH DI TAHAP AKHIR / KLIK SELESAI"*) otomatis dibuang tanpa memengaruhi bagian soal utama.
     * **Tanpa Penomoran Otomatis:** Teks pertanyaan dicetak sesuai isi Form tanpa tambahan nomor urut otomatis.
     * **Header Halaman 1 Saja:** Kop Surat di Header Word otomatis dikunci agar hanya tampil di halaman pertama.
+    * **Kunci Jawaban 2 Tahap:** Setelah Generate, isi kunci & skor di panel **🔑 Isi Kunci Jawaban & Skor**, lalu tekan *Generate Kunci Jawaban*. Kunci PG/kotak centang/dropdown bisa dimuat dari file kunci skrip GAS. Simpan kunci (.json) agar tidak perlu mengetik ulang.
     """)
 
 if submit_btn:
@@ -1401,21 +1842,17 @@ if submit_btn:
                         ljk_pdf = open(ljk_pdf_p, "rb").read() if (ljk_pdf_p and os.path.exists(ljk_pdf_p)) else None
                         st.session_state["hasil_files"]["ljk_siswa"] = {"docx": ljk_docx, "pdf": ljk_pdf}
 
-                        # 2. Lembar Kunci Jawaban Guru (Terisi)
-                        p_out_kunci = os.path.join(tmpdir, "Kunci_Jawaban_Guru.docx")
-                        doc_kunci = DocxTemplate(p_tpl_ljk)
-                        ctx_kunci = build_context_for_doc(raw_ctx, doc_kunci, mode_kunci=True, judul_dokumen="KUNCI JAWABAN & PEDOMAN SKOR")
-                        doc_kunci.render(ctx_kunci)
-                        lock_layout_prevent_page_split(doc_kunci.docx)
-                        doc_kunci.save(p_out_kunci)
-                        fix_header_first_page_only_file(p_out_kunci)
+                        # Kunci Jawaban Guru dibuat di Tahap 2 (panel "Isi Kunci Jawaban & Skor")
+                        st.session_state["tpl_ljk_bytes"] = bytes(tpl_ljk.getbuffer())
+                    else:
+                        st.session_state["tpl_ljk_bytes"] = None
 
-                        with open(p_out_kunci, "rb") as f:
-                            kunci_docx = f.read()
-                        kunci_pdf_p = convert_docx_to_pdf(p_out_kunci, tmpdir)
-                        kunci_pdf = open(kunci_pdf_p, "rb").read() if (kunci_pdf_p and os.path.exists(kunci_pdf_p)) else None
-                        st.session_state["hasil_files"]["kunci_guru"] = {"docx": kunci_docx, "pdf": kunci_pdf}
-
+                st.session_state["raw_ctx"] = raw_ctx
+                st.session_state["kunci_state"] = init_key_state(raw_ctx, st.session_state.get("kunci_state"))
+                st.session_state["kunci_info"] = None
+                st.session_state["kunci_loaded_sig"] = None
+                st.session_state["kunci_load_msg"] = None
+                seed_key_widgets(st.session_state["kunci_state"], raw_ctx)
                 st.session_state["generated"] = True
                 st.session_state["image_warnings"] = list(dict.fromkeys(IMAGE_WARNINGS))
                 st.session_state["image_debug"] = dict(IMAGE_DEBUG)
@@ -1495,6 +1932,9 @@ if st.session_state.get("generated"):
                 if item_data["pdf"]:
                     pdf_viewer(input=item_data["pdf"], height=680, key=f"pv_{key_id}")
             tab_idx += 1
+
+    if st.session_state.get("raw_ctx"):
+        render_key_panel()
 
 st.markdown("""
 <div style="text-align: center; margin-top: 3.5rem; color: #94a3b8; font-size: 0.78rem;">
