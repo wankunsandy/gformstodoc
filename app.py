@@ -291,6 +291,18 @@ def download_image_to_stream(img_url: str) -> Optional[io.BytesIO]:
     """
     if not img_url:
         return None
+    # URL gambar Google Form berakhiran "=w150" dsb. (ukuran tampilan di layar).
+    # Minta versi beresolusi lebih tinggi agar tajam saat dicetak; jika gagal,
+    # kembali ke URL asli.
+    hi_res = re.sub(r"=w\d+(-h\d+)?$", "=w1200", img_url)
+    if hi_res != img_url:
+        result = _download_image(hi_res, record_warning=False)
+        if result is not None:
+            return result
+    return _download_image(img_url, record_warning=True)
+
+
+def _download_image(img_url: str, record_warning: bool = True) -> Optional[io.BytesIO]:
     try:
         headers = {
             "User-Agent": "Mozilla/5.0",
@@ -298,7 +310,8 @@ def download_image_to_stream(img_url: str) -> Optional[io.BytesIO]:
         }
         resp = requests.get(img_url, headers=headers, timeout=15)
         if resp.status_code != 200 or not resp.content:
-            IMAGE_WARNINGS.append(f"Gagal mengunduh gambar (HTTP {resp.status_code}).")
+            if record_warning:
+                IMAGE_WARNINGS.append(f"Gagal mengunduh gambar (HTTP {resp.status_code}).")
             return None
 
         IMAGE_DEBUG["gambar_terunduh"] = IMAGE_DEBUG.get("gambar_terunduh", 0) + 1
@@ -315,13 +328,14 @@ def download_image_to_stream(img_url: str) -> Optional[io.BytesIO]:
         out.seek(0)
         return out
     except Exception as e:
-        IMAGE_WARNINGS.append(f"Gambar tidak dapat dibaca: {type(e).__name__}.")
+        if record_warning:
+            IMAGE_WARNINGS.append(f"Gambar tidak dapat dibaca: {type(e).__name__}.")
         return None
 
 
 def find_image_url(data: Any) -> Optional[str]:
     if isinstance(data, str):
-        if "googleusercontent.com" in data or (
+        if "googleusercontent.com" in data or "/forms-images" in data or (
             data.startswith("http") and any(ext in data.lower() for ext in [".png", ".jpg", ".jpeg", ".webp"])
         ):
             return data
@@ -359,7 +373,7 @@ def extract_html_images_by_item(html_text: str, raw_items: list) -> Dict[int, Li
     item_positions.sort(key=lambda x: x[0])
     img_map: Dict[int, List[str]] = {}
     img_pattern = re.compile(
-        r'<img[^>]+?(?:data-src|src)=["\'](https://[^"\']*(?:googleusercontent\.com|ggpht\.com|drive\.google\.com)[^"\']+)["\']',
+        r'<img[^>]+?(?:data-src|src)=["\'](https://[^"\']*(?:googleusercontent\.com|ggpht\.com|drive\.google\.com|docs\.google\.com/forms-images)[^"\']+)["\']',
         re.IGNORECASE
     )
 
@@ -975,7 +989,9 @@ def extract_via_public_html(form_url: str) -> Dict[str, Any]:
 
             # Ambil URL gambar pertanyaan utama dari blok HTML soal
             q_img_url = None
-            if item_imgs and len(item_imgs) > n_opt_imgs:
+            # Di FB_PUBLIC_LOAD_DATA_, gambar pertanyaan tercatat pada indeks 9.
+            has_q_img = len(item) > 9 and bool(item[9])
+            if item_imgs and (has_q_img or len(item_imgs) > n_opt_imgs):
                 q_img_url = item_imgs.pop(0)
             else:
                 q_img_url = find_image_url(item)
