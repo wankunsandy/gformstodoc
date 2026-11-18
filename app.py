@@ -1190,6 +1190,12 @@ TIPE_LABEL = {
     "isian": "Isian / Uraian",
 }
 TIPE_URUT = ["pilihan_ganda", "pg_kompleks", "benar_salah", "kisi_pilihan_ganda", "menjodohkan", "isian"]
+TIPE_BERBARIS = ("benar_salah", "kisi_pilihan_ganda", "menjodohkan")
+
+
+def _rows_of(q: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Baris yang diberi kunci & skor sendiri: premis (menjodohkan) atau baris kisi."""
+    return (q.get("kiri") or []) if q.get("tipe") == "menjodohkan" else (q.get("baris") or [])
 
 
 def _norm(text: Any) -> str:
@@ -1215,6 +1221,7 @@ def empty_key_entry(q: Dict[str, Any]) -> Dict[str, Any]:
         "pg": [],
         "baris": [-1] * len(q.get("baris") or []),
         "jodoh": [""] * len(q.get("kiri") or []),
+        "poin_baris": [0.0] * len(_rows_of(q)) if tipe_kunci(q) in TIPE_BERBARIS else [],
         "teks": "",
     }
 
@@ -1224,6 +1231,8 @@ def key_entry_from_question(q: Dict[str, Any]) -> Dict[str, Any]:
     e = empty_key_entry(q)
     e["poin"] = float(q.get("poin") or 0)
     t = e["tipe"]
+    if t in TIPE_BERBARIS:
+        e["poin_baris"] = [float(r.get("poin") or 0) for r in _rows_of(q)]
     if t in ("pilihan_ganda", "pg_kompleks"):
         e["pg"] = [o["huruf"] for o in q.get("opsi", []) if o.get("is_kunci")]
     elif t in ("benar_salah", "kisi_pilihan_ganda"):
@@ -1258,12 +1267,19 @@ def init_key_state(raw_ctx: Dict[str, Any], previous: Optional[Dict[str, Any]] =
             k = question_key(q)
             base = key_entry_from_question(q)
             old = previous.get(k)
-            if old and old.get("tipe") == base["tipe"] \
+            if old and old.get("tipe") == base["tipe"] and old.get("by_text") is not None:
+                new = dict(base)
+                new["poin"] = float(old.get("poin") or 0)
+                new["teks"] = old.get("teks") or ""
+                base = restore_text_keys(new, old["by_text"], q)
+            elif old and old.get("tipe") == base["tipe"] \
                     and len(old.get("baris", [])) == len(base["baris"]) \
                     and len(old.get("jodoh", [])) == len(base["jodoh"]):
                 base = dict(old)
+                if len(base.get("poin_baris") or []) != len(_rows_of(q)) and base["tipe"] in TIPE_BERBARIS:
+                    base["poin_baris"] = [0.0] * len(_rows_of(q))
             base["no"] = q.get("no_global")
-            state[k] = base
+            state[k] = attach_text_keys(base, q)
     return state
 
 
@@ -1276,6 +1292,52 @@ def _match_option_letters(q: Dict[str, Any], values: List[str]) -> List[str]:
                     letters.append(o["huruf"])
                 break
     return letters
+
+
+def attach_text_keys(e: Dict[str, Any], q: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Menyimpan kunci dalam bentuk TEKS (bukan nomor urut/huruf), agar tetap benar
+    walaupun Form memakai 'acak urutan' sehingga urutan opsi/baris berubah setiap dibuka.
+    """
+    t = e.get("tipe")
+    bt: Dict[str, Any] = {}
+    if t in ("pilihan_ganda", "pg_kompleks"):
+        m = {o["huruf"]: o["teks"] for o in q.get("opsi", [])}
+        bt["pg"] = [m[h] for h in e.get("pg") or [] if h in m]
+    elif t in TIPE_BERBARIS:
+        rows = _rows_of(q)
+        if t == "menjodohkan":
+            m = {r["huruf"]: r["teks"] for r in q.get("kanan", [])}
+            bt["jodoh"] = {r["teks"]: m.get(h, "") for r, h in zip(rows, e.get("jodoh") or []) if h}
+        else:
+            headers = q.get("kolom_header") or []
+            bt["baris"] = {r["teks"]: headers[i] for r, i in zip(rows, e.get("baris") or []) if 0 <= i < len(headers)}
+        bt["poin_baris"] = {r["teks"]: float(v or 0) for r, v in zip(rows, e.get("poin_baris") or [])}
+    e["by_text"] = bt
+    return e
+
+
+def restore_text_keys(e: Dict[str, Any], bt: Dict[str, Any], q: Dict[str, Any]) -> Dict[str, Any]:
+    """Kebalikan attach_text_keys: menyusun ulang kunci untuk urutan opsi/baris saat ini."""
+    t = e.get("tipe")
+    if t in ("pilihan_ganda", "pg_kompleks") and "pg" in bt:
+        e["pg"] = _match_option_letters(q, bt["pg"])
+    elif t in TIPE_BERBARIS:
+        rows = _rows_of(q)
+        rmap = {_norm(k): v for k, v in (bt.get("jodoh") or bt.get("baris") or {}).items()}
+        pmap = {_norm(k): v for k, v in (bt.get("poin_baris") or {}).items()}
+        if t == "menjodohkan":
+            kmap = {_norm(r["teks"]): r["huruf"] for r in q.get("kanan", [])}
+            e["jodoh"] = [kmap.get(_norm(rmap.get(_norm(r["teks"]), "")), "") for r in rows]
+        else:
+            headers = [_norm(h) for h in (q.get("kolom_header") or [])]
+            e["baris"] = [headers.index(_norm(rmap[_norm(r["teks"])])) if _norm(rmap.get(_norm(r["teks"]), "")) in headers else -1
+                          for r in rows]
+        if pmap:
+            e["poin_baris"] = [float(pmap.get(_norm(r["teks"]), 0) or 0) for r in rows]
+            e["poin"] = sum(e["poin_baris"])
+    e["by_text"] = bt
+    return e
 
 
 def merge_key_file(state: Dict[str, Dict[str, Any]], raw_ctx: Dict[str, Any], data: Dict[str, Any]) -> Tuple[int, int]:
@@ -1306,13 +1368,20 @@ def merge_key_file(state: Dict[str, Dict[str, Any]], raw_ctx: Dict[str, Any], da
                 continue
             new = dict(cur)
             new["poin"] = float(e.get("poin") or 0)
+            if e.get("by_text") is not None:
+                new["teks"] = str(e.get("teks") or "")
+                state[question_key(q)] = restore_text_keys(new, e["by_text"], q)
+                terisi += 1
+                continue
             new["pg"] = [h for h in e.get("pg", []) if any(o["huruf"] == h for o in q.get("opsi", []))]
             if len(e.get("baris", [])) == len(cur["baris"]):
                 new["baris"] = [int(i) for i in e["baris"]]
             if len(e.get("jodoh", [])) == len(cur["jodoh"]):
                 new["jodoh"] = [str(h) for h in e["jodoh"]]
+            if len(e.get("poin_baris") or []) == len(cur.get("poin_baris") or []):
+                new["poin_baris"] = [float(v or 0) for v in e["poin_baris"]]
             new["teks"] = str(e.get("teks") or "")
-            state[question_key(q)] = new
+            state[question_key(q)] = attach_text_keys(new, q)
             terisi += 1
         return terisi, tidak_cocok
 
@@ -1327,13 +1396,22 @@ def merge_key_file(state: Dict[str, Dict[str, Any]], raw_ctx: Dict[str, Any], da
                 cur["poin"] = float(it["poin"])
             if it.get("benar") and cur["tipe"] in ("pilihan_ganda", "pg_kompleks"):
                 cur["pg"] = _match_option_letters(q, it["benar"])
+            attach_text_keys(cur, q)
             terisi += 1
         return terisi, tidak_cocok
 
     raise ValueError("Format file kunci tidak dikenali.")
 
 
-def export_key_file(state: Dict[str, Dict[str, Any]], judul_form: str) -> bytes:
+def export_key_file(state: Dict[str, Dict[str, Any]], judul_form: str,
+                    raw_ctx: Optional[Dict[str, Any]] = None) -> bytes:
+    if raw_ctx:
+        state = copy.deepcopy(state)
+        for sec in raw_ctx.get("daftar_bagian", []):
+            for q in sec.get("soal", []):
+                e = state.get(question_key(q))
+                if e:
+                    attach_text_keys(e, q)
     return json.dumps(
         {"format": KUNCI_FORMAT, "judul_form": judul_form, "kunci": state},
         ensure_ascii=False, indent=2,
@@ -1351,10 +1429,20 @@ def apply_keys_to_context(raw_ctx: Dict[str, Any], state: Dict[str, Dict[str, An
     for sec in ctx.get("daftar_bagian", []):
         for q in sec.get("soal", []):
             e = state.get(question_key(q)) or empty_key_entry(q)
-            poin = float(e.get("poin") or 0) or float(default_poin or 0)
+            t = e["tipe"]
+            dflt = float(default_poin or 0)
+            if t in TIPE_BERBARIS and _rows_of(q):
+                # Skor per baris (premis / pernyataan); skor soal = jumlahnya
+                pb = list(e.get("poin_baris") or [])
+                pb += [0.0] * (len(_rows_of(q)) - len(pb))
+                row_poin = [float(v or 0) or dflt for v in pb[: len(_rows_of(q))]]
+                for r, v in zip(_rows_of(q), row_poin):
+                    r["poin"] = _fmt_poin(v)
+                poin = sum(row_poin) or float(e.get("poin") or 0)
+            else:
+                poin = float(e.get("poin") or 0) or dflt
             q["poin"] = _fmt_poin(poin)
             total += poin
-            t = e["tipe"]
 
             if t in ("pilihan_ganda", "pg_kompleks"):
                 benar = set(e.get("pg") or [])
@@ -1569,6 +1657,8 @@ def seed_key_widgets(state: Dict[str, Dict[str, Any]], raw_ctx: Dict[str, Any]) 
             e = state.get(k) or empty_key_entry(q)
             t = e["tipe"]
             st.session_state[_w(k, "poin")] = float(e.get("poin") or 0)
+            for i, v in enumerate(e.get("poin_baris") or []):
+                st.session_state[_w(k, f"pr{i}")] = float(v or 0)
             if t == "pilihan_ganda":
                 st.session_state[_w(k, "pg")] = (e.get("pg") or [KOSONG])[0]
             elif t == "pg_kompleks":
@@ -1593,6 +1683,9 @@ def read_key_widgets(state: Dict[str, Dict[str, Any]], raw_ctx: Dict[str, Any]) 
             e = new_state.setdefault(k, empty_key_entry(q))
             t = e["tipe"]
             e["poin"] = float(st.session_state.get(_w(k, "poin"), 0) or 0)
+            if t in TIPE_BERBARIS:
+                e["poin_baris"] = [float(st.session_state.get(_w(k, f"pr{i}"), 0) or 0) for i in range(len(_rows_of(q)))]
+                e["poin"] = sum(e["poin_baris"])
             if t == "pilihan_ganda":
                 v = st.session_state.get(_w(k, "pg"), KOSONG)
                 e["pg"] = [] if v == KOSONG else [v]
@@ -1611,6 +1704,7 @@ def read_key_widgets(state: Dict[str, Dict[str, Any]], raw_ctx: Dict[str, Any]) 
                     e["jodoh"].append("" if v == KOSONG else v)
             else:
                 e["teks"] = st.session_state.get(_w(k, "teks"), "") or ""
+            attach_text_keys(e, q)
     return new_state
 
 
@@ -1664,9 +1758,10 @@ def render_key_panel() -> None:
 
     with st.form("form_kunci"):
         st.number_input(
-            "Skor default untuk soal yang skornya masih 0",
+            "Skor default untuk soal/baris yang skornya masih 0",
             min_value=0.0, step=0.5, key="kw_default_poin",
-            help="Dipakai untuk semua soal yang skornya belum diisi. Biarkan 0 jika tidak dipakai.",
+            help="Dipakai untuk semua soal yang skornya belum diisi. Untuk menjodohkan, Benar/Salah, "
+                 "dan kisi, skor default berlaku per baris. Biarkan 0 jika tidak dipakai.",
         )
 
         for t in TIPE_URUT:
@@ -1679,6 +1774,27 @@ def render_key_panel() -> None:
                 for q in qs:
                     k = question_key(q)
                     st.markdown(f"**No. {q.get('no_global')}** — {_ringkas(q.get('pertanyaan', ''))}")
+                    if t in TIPE_BERBARIS:
+                        st.caption("Skor diisi per baris; skor soal = jumlah skor baris.")
+                        headers = q.get("kolom_header") or []
+                        kanan = q.get("kanan") or []
+                        m_kanan = {r["huruf"]: _ringkas(r["teks"], 40) for r in kanan}
+                        for i, r in enumerate(_rows_of(q)):
+                            c_kunci, c_poin = st.columns([4, 1])
+                            with c_kunci:
+                                if t == "menjodohkan":
+                                    st.selectbox(
+                                        f"{r.get('no_angka')}. {_ringkas(r.get('teks', ''), 70)}",
+                                        [KOSONG] + [x["huruf"] for x in kanan], key=_w(k, f"j{i}"),
+                                        format_func=lambda h, m=m_kanan: h if h == KOSONG else f"{h}. {m.get(h, '')}",
+                                    )
+                                else:
+                                    lbl = f"({r.get('sub_no')})" if t == "benar_salah" else f"{r.get('no_angka')}."
+                                    st.selectbox(f"{lbl} {_ringkas(r.get('teks', ''), 70)}", [KOSONG] + headers, key=_w(k, f"r{i}"))
+                            with c_poin:
+                                st.number_input("Skor", min_value=0.0, step=0.5, key=_w(k, f"pr{i}"))
+                        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+                        continue
                     c_kunci, c_poin = st.columns([4, 1])
                     with c_poin:
                         st.number_input("Skor", min_value=0.0, step=0.5, key=_w(k, "poin"))
@@ -1695,20 +1811,6 @@ def render_key_panel() -> None:
                                 "Kunci (boleh lebih dari satu)", [o["huruf"] for o in opsi], key=_w(k, "pgk"),
                                 format_func=lambda h, m=teks_opsi: f"{h}. {m.get(h, '')}",
                             )
-                        elif t in ("benar_salah", "kisi_pilihan_ganda"):
-                            headers = q.get("kolom_header") or []
-                            for i, b in enumerate(q.get("baris") or []):
-                                lbl = f"({b.get('sub_no')})" if t == "benar_salah" else f"{b.get('no_angka')}."
-                                st.selectbox(f"{lbl} {_ringkas(b.get('teks', ''), 70)}", [KOSONG] + headers, key=_w(k, f"r{i}"))
-                        elif t == "menjodohkan":
-                            kanan = q.get("kanan") or []
-                            m_kanan = {r["huruf"]: _ringkas(r["teks"], 40) for r in kanan}
-                            for i, kr in enumerate(q.get("kiri") or []):
-                                st.selectbox(
-                                    f"{kr.get('no_angka')}. {_ringkas(kr.get('teks', ''), 70)}",
-                                    [KOSONG] + [r["huruf"] for r in kanan], key=_w(k, f"j{i}"),
-                                    format_func=lambda h, m=m_kanan: h if h == KOSONG else f"{h}. {m.get(h, '')}",
-                                )
                         else:
                             st.text_input("Kunci / pedoman jawaban", key=_w(k, "teks"))
                     st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
@@ -1739,7 +1841,7 @@ def render_key_panel() -> None:
 
     st.download_button(
         "💾 Simpan kunci (.json) untuk dipakai lagi",
-        data=export_key_file(st.session_state.get("kunci_state") or {}, raw_ctx.get("judul_form", "")),
+        data=export_key_file(st.session_state.get("kunci_state") or {}, raw_ctx.get("judul_form", ""), raw_ctx),
         file_name=f"kunci_{st.session_state.get('judul_naskah', 'form')}.json",
         mime="application/json",
         use_container_width=True,
