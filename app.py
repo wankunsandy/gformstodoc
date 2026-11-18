@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import zipfile
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -264,14 +265,94 @@ def configure_header_first_page_only(docx_obj) -> None:
         clear_header_completely(sec.header)
 
 
-def lock_layout_prevent_page_split(docx_obj) -> None:
-    """Mengunci paragraf soal, gambar, dan baris tabel agar tidak terpotong lintas halaman."""
-    configure_header_first_page_only(docx_obj)
+EMPTY_HDR_RID = "rIdFormPrintEmptyHdr"
+EMPTY_HDR_NAME = "header_formprint_empty.xml"
 
+def fix_header_first_page_only_file(docx_path: str) -> None:
+    """
+    Memastikan Kop (header) hanya tampil di halaman 1 dengan menyunting XML DOCX
+    secara langsung SETELAH disimpan (perubahan header lewat python-docx tidak
+    selalu ikut tersimpan setelah docxtpl merender header).
+    - Section pertama: header "first" = kop, header "default" = header kosong, titlePg aktif.
+    - Section berikutnya: tidak punya header sendiri (mewarisi section pertama).
+    """
+    with zipfile.ZipFile(docx_path) as zin:
+        files = {n: zin.read(n) for n in zin.namelist()}
+
+    doc = files["word/document.xml"].decode("utf-8")
+    sect_prs = list(re.finditer(r"<w:sectPr\b[^>]*?(?:/>|>.*?</w:sectPr>)", doc, re.S))
+    if not sect_prs:
+        return
+
+    def fix_first(sp: str) -> str:
+        if sp.endswith("/>"):
+            sp = sp[:-2] + "></w:sectPr>"
+        refs = re.findall(r"<w:headerReference\b[^>]*/>", sp)
+        types = {re.search(r'w:type="(\w+)"', r).group(1): r for r in refs if re.search(r'w:type="(\w+)"', r)}
+        if not types:
+            return sp
+        if "first" not in types and "default" in types:
+            sp = sp.replace(types["default"], types["default"].replace('w:type="default"', 'w:type="first"'), 1)
+        elif "default" in types:
+            sp = sp.replace(types["default"], "", 1)
+        open_tag = re.match(r"<w:sectPr\b[^>]*>", sp).group(0)
+        sp = sp.replace(open_tag, open_tag + f'<w:headerReference w:type="default" r:id="{EMPTY_HDR_RID}"/>', 1)
+        if "<w:titlePg" not in sp:
+            m = re.search(r"<w:(textDirection|bidi|rtlGutter|docGrid|printerSettings|sectPrChange)\b", sp)
+            pos = m.start() if m else sp.rindex("</w:sectPr>")
+            sp = sp[:pos] + "<w:titlePg/>" + sp[pos:]
+        return sp
+
+    def fix_later(sp: str) -> str:
+        sp = re.sub(r"<w:headerReference\b[^>]*/>", "", sp)
+        sp = re.sub(r"<w:titlePg\b[^>]*/>", "", sp)
+        return sp
+
+    pieces, last = [], 0
+    for i, m in enumerate(sect_prs):
+        pieces.append(doc[last:m.start()])
+        pieces.append(fix_first(m.group(0)) if i == 0 else fix_later(m.group(0)))
+        last = m.end()
+    pieces.append(doc[last:])
+    doc = "".join(pieces)
+
+    if EMPTY_HDR_RID in doc:
+        if 'xmlns:r=' not in doc[:2000]:
+            doc = doc.replace("<w:document ", '<w:document xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ', 1)
+        files[f"word/{EMPTY_HDR_NAME}"] = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p/></w:hdr>'
+        ).encode("utf-8")
+        rels = files["word/_rels/document.xml.rels"].decode("utf-8")
+        if EMPTY_HDR_RID not in rels:
+            rels = rels.replace("</Relationships>",
+                f'<Relationship Id="{EMPTY_HDR_RID}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="{EMPTY_HDR_NAME}"/></Relationships>')
+            files["word/_rels/document.xml.rels"] = rels.encode("utf-8")
+        ct = files["[Content_Types].xml"].decode("utf-8")
+        if EMPTY_HDR_NAME not in ct:
+            ct = ct.replace("</Types>",
+                f'<Override PartName="/word/{EMPTY_HDR_NAME}" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/></Types>')
+            files["[Content_Types].xml"] = ct.encode("utf-8")
+
+    files["word/document.xml"] = doc.encode("utf-8")
+    tmp = docx_path + ".tmp"
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+        for n, b in files.items():
+            zout.writestr(n, b)
+    shutil.move(tmp, docx_path)
+
+
+def lock_layout_prevent_page_split(docx_obj) -> None:
+    """Mengunci paragraf soal, gambar, dan baris tabel agar tidak terpotong lintas halaman.
+    (Pengaturan Kop halaman 1 dilakukan oleh fix_header_first_page_only_file setelah disimpan.)"""
     for p in docx_obj.paragraphs:
         text = p.text.strip()
         p.paragraph_format.keep_together = True
-        if "w:drawing" in p._p.xml or text.startswith("Petunjuk:"):
+        if text.startswith("Petunjuk:"):
+            # JANGAN dirantai ke soal pertama: judul + petunjuk panjang + soal bergambar
+            # menjadi satu blok yang terlalu tinggi, sehingga seluruhnya terlempar ke halaman 2.
+            p.paragraph_format.keep_with_next = False
+        elif "w:drawing" in p._p.xml:
             p.paragraph_format.keep_with_next = True
 
     for table in docx_obj.tables:
@@ -1291,6 +1372,7 @@ if submit_btn:
                         doc_soal.render(ctx_soal)
                         lock_layout_prevent_page_split(doc_soal.docx)
                         doc_soal.save(p_out_soal)
+                        fix_header_first_page_only_file(p_out_soal)
 
                         with open(p_out_soal, "rb") as f:
                             docx_b = f.read()
@@ -1311,6 +1393,7 @@ if submit_btn:
                         doc_ljk.render(ctx_ljk)
                         lock_layout_prevent_page_split(doc_ljk.docx)
                         doc_ljk.save(p_out_ljk)
+                        fix_header_first_page_only_file(p_out_ljk)
 
                         with open(p_out_ljk, "rb") as f:
                             ljk_docx = f.read()
@@ -1325,6 +1408,7 @@ if submit_btn:
                         doc_kunci.render(ctx_kunci)
                         lock_layout_prevent_page_split(doc_kunci.docx)
                         doc_kunci.save(p_out_kunci)
+                        fix_header_first_page_only_file(p_out_kunci)
 
                         with open(p_out_kunci, "rb") as f:
                             kunci_docx = f.read()
