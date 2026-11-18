@@ -515,7 +515,14 @@ def fetch_all_sections_images(viewform_url: str, first_html: str, raw_items: lis
             IMAGE_WARNINGS.append(f"Gagal membuka Bagian {current_page + 2}: {type(e).__name__}.")
             break
         if resp_page.status_code != 200:
-            IMAGE_WARNINGS.append(f"Gagal membuka Bagian {current_page + 2} (HTTP {resp_page.status_code}).")
+            if resp_page.status_code in (401, 403):
+                IMAGE_WARNINGS.append(
+                    f"Google menolak membuka Bagian {current_page + 2} tanpa login (HTTP {resp_page.status_code}). "
+                    "Solusi: buat salinan Form versi satu halaman (ganti pembatas bagian dengan "
+                    "'Judul & deskripsi'), lalu gunakan link salinan tersebut."
+                )
+            else:
+                IMAGE_WARNINGS.append(f"Gagal membuka Bagian {current_page + 2} (HTTP {resp_page.status_code}).")
             break
 
         new_history = _get_hidden_input(resp_page.text, "pageHistory")
@@ -814,7 +821,17 @@ def extract_via_public_html(form_url: str) -> Dict[str, Any]:
     raw_items = raw_data[1][1] or []
 
     has_multiple_sections = any(it and len(it) >= 4 and it[3] == 8 for it in raw_items)
-    in_first_section = has_multiple_sections
+
+    # MODE SATU HALAMAN: Form tanpa pembatas bagian, tetapi memakai item
+    # "Judul & deskripsi" (tipe 6) sebagai judul bagian. Semua soal tampil di
+    # halaman pertama sehingga gambar bisa diambil tanpa meniru klik
+    # "Berikutnya" (yang bisa ditolak Google dengan HTTP 401).
+    # Item sebelum judul pertama (misalnya isian identitas) dilewati.
+    single_page_mode = (not has_multiple_sections) and any(
+        it and len(it) >= 4 and it[3] == 6 for it in raw_items
+    )
+    section_marker_type = 6 if single_page_mode else 8
+    in_first_section = has_multiple_sections or single_page_mode
 
     raw_sections = []
     current_section = {"nama_bagian": "", "petunjuk": "", "soal": []}
@@ -827,12 +844,11 @@ def extract_via_public_html(form_url: str) -> Dict[str, Any]:
             continue
         item_type = item[3]
 
-        if item_type == 8:
+        if item_type == section_marker_type:
             if in_first_section:
                 in_first_section = False
-            else:
-                if current_section["soal"] or current_section["nama_bagian"]:
-                    raw_sections.append(current_section)
+            elif current_section["soal"] or current_section["nama_bagian"]:
+                raw_sections.append(current_section)
 
             current_section = {
                 "nama_bagian": item[1] or "",
