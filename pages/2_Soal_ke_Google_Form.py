@@ -197,6 +197,9 @@ with st.form("sf_form"):
         st.checkbox("Acak urutan soal", value=False, key="sf_acak")
         st.checkbox("Hanya pengguna organisasi", value=False, key="sf_org",
                     help="Responden harus login dengan akun sekolah.")
+    st.radio("Bentuk soal menjodohkan di Form", ["kisi", "dropdown"], horizontal=True, key="sf_jodoh",
+             format_func=lambda v: {"kisi": "Kisi pilihan ganda (kunci & skor diisi manual di Form)",
+                                    "dropdown": "Dropdown per nomor (dinilai otomatis)"}[v])
     st.number_input("Skor default untuk soal yang skornya masih 0", min_value=0, step=1, value=1, key="sf_poin_default")
 
     st.markdown("#### 🔍 Periksa Soal, Kunci & Skor")
@@ -254,6 +257,7 @@ if buat:
         "acak_soal": st.session_state["sf_acak"],
         "tampilkan_nomor": st.session_state["sf_nomor"],
         "batasi_organisasi": st.session_state["sf_org"],
+        "menjodohkan": st.session_state.get("sf_jodoh", "kisi"),
         "poin_default": st.session_state["sf_poin_default"],
         "template": {
             "pakai": st.session_state["sf_template"],
