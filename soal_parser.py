@@ -837,7 +837,7 @@ def build_paket(parsed: Dict[str, Any], edits: Dict[str, Dict[str, Any]], settin
         "judul": settings.get("judul", "Soal"),
         "deskripsi": settings.get("deskripsi", ""),
         "identitas": settings.get("identitas", []),
-        "pengaturan": {k: settings.get(k) for k in ("wajib", "acak_soal", "tampilkan_nomor", "batasi_organisasi")},
+        "pengaturan": {k: settings.get(k) for k in ("wajib", "acak_soal", "tampilkan_nomor", "batasi_organisasi", "menjodohkan")},
         "template": settings.get("template") or {"pakai": False},
         "kelas_pilihan": settings.get("kelas_pilihan") or [],
         "bagian": bagian,
