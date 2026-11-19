@@ -9,12 +9,11 @@ import re
 import streamlit as st
 
 from soal_parser import build_paket, default_key_index, parse_docx
+from ui_theme import apply_theme, link_button, nav_links, render_steps
 
 st.set_page_config(page_title="FormPrint Studio - Soal ke Google Form", page_icon="📝", layout="centered",
                    initial_sidebar_state="collapsed")
-st.markdown("<style>#MainMenu{visibility:hidden;} header{visibility:hidden;} footer{visibility:hidden;}"
-            ".block-container{max-width:820px!important;padding-top:2.5rem!important;}</style>",
-            unsafe_allow_html=True)
+apply_theme()
 
 TIPE_LABEL = {
     "pilihan_ganda": "Pilihan Ganda",
@@ -106,28 +105,35 @@ def ringkas(t, n=60):
 
 
 # ==============================================================================
-try:
-    _n1, _n2 = st.columns(2)
-    with _n1:
-        st.page_link("app.py", label="Google Form → Naskah Cetak", icon="🖨️")
-    with _n2:
-        st.page_link("pages/2_Soal_ke_Google_Form.py", label="Soal DOCX → Google Form", icon="📝")
-except Exception:
-    pass
+nav_links()
 
 st.markdown("## 📝 Soal → Google Form")
 st.caption("Ubah naskah soal DOCX menjadi Google Form kuis, lengkap dengan kunci dan skor.")
 
-with st.expander("ℹ️ Cara pakai"):
-    st.markdown("""
-1. Unggah **naskah soal (.docx)** dengan judul bagian seperti *SOAL PILIHAN GANDA*, *SOAL PILIHAN GANDA KOMPLEK*,
-   *SOAL BENAR SALAH*, *SOAL ISIAN SINGKAT*, *SOAL MENJODOHKAN*, *URAIAN*.
-2. Periksa hasil pembacaan. Perbaiki teks/opsi bila perlu, lalu isi **kunci** dan **skor**.
-3. Tekan **Buat Paket Soal**, unduh file **.json**.
-4. Buka aplikasi web GAS **"FormPrint – Buat Form"**, unggah file tersebut, klik **Buat Form**.
+render_steps("📋 Alur Penggunaan: Soal DOCX → Google Form", [
+    ("Unggah naskah soal",
+     "Unggah file <b>.docx</b> naskah soal (format cetak sekolah). Judul bagian seperti <b>SOAL PILIHAN GANDA</b> "
+     "menentukan jenis soal secara otomatis."),
+    ("Periksa soal, kunci & skor",
+     "Lengkapi <b>Mata Pelajaran</b>, <b>Hari/Tanggal</b>, <b>Waktu</b>, dan <b>Jenjang kelas</b>. "
+     "Periksa teks & opsi, lalu isi <b>kunci</b> dan <b>skor</b> setiap soal."),
+    ("Buat & unduh paket soal",
+     "Klik <b>Buat Paket Soal</b>, lalu unduh file <b>.json</b>. File ini berisi kunci jawaban, jangan dibagikan ke siswa."),
+    ("Buat Google Form",
+     "Buka aplikasi <b>Buat Form</b>, unggah file .json, klik <b>Buat Form</b>. Form kuis tersimpan di folder jenjang "
+     "sekolah, lengkap dengan link edit dan link untuk siswa.",
+     link_button("GAS_BUAT_FORM_URL", "Buka aplikasi Buat Form")),
+])
 
-*Opsional di dokumen:* tulis `Kunci: B` dan `Skor: 2` di bawah soal agar terisi otomatis.
-*Catatan Google Form:* gambar pada **opsi** jawaban dan kunci **isian singkat** tidak bisa dibuat otomatis.
+with st.expander("ℹ️ Format dokumen yang dikenali"):
+    st.markdown("""
+- **Judul bagian** (huruf kapital): *SOAL PILIHAN GANDA*, *SOAL PILIHAN GANDA KOMPLEK*, *SOAL BENAR SALAH*,
+  *SOAL ISIAN SINGKAT*, *SOAL MENJODOHKAN*, *URAIAN*. Kalimat perintah di bawahnya menjadi petunjuk bagian.
+- **Nomor soal** boleh diketik, otomatis, atau tanpa nomor (soal dipisahkan baris kosong).
+- **Opsi**: `A.`/`a.` diketik, huruf otomatis Word, kotak `[ ]`, dua kolom dengan Tab, atau di dalam tabel.
+- **Benar/Salah** dan **Menjodohkan** dalam bentuk tabel (setiap baris = satu nomor).
+- *Opsional:* tulis `Kunci: B` dan `Skor: 2` di bawah soal, atau beri ✓ pada kolom Benar/Salah, agar terisi otomatis.
+- *Batasan Google Form:* gambar pada **opsi** jawaban dan kunci **isian singkat** tidak bisa dibuat otomatis.
 """)
 
 up = st.file_uploader("Naskah soal (.docx)", type=["docx"], key="sf_upload")
