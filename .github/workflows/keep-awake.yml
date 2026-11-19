@@ -1,0 +1,28 @@
+name: Jaga FormPrint tetap aktif
+
+on:
+  schedule:
+    # Setiap 4 jam (waktu UTC). Streamlit menidurkan aplikasi setelah 12 jam tanpa kunjungan.
+    - cron: "17 */4 * * *"
+  workflow_dispatch: {}   # bisa juga dijalankan manual dari tab Actions
+
+jobs:
+  colek:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Pasang Playwright + Chromium
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Buka aplikasi Streamlit
+        env:
+          STREAMLIT_URLS: ${{ vars.STREAMLIT_URLS }}
+        run: python keep_awake.py
