@@ -1620,6 +1620,16 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+# ---- Navigasi antarhalaman (sidebar disembunyikan, jadi pakai tombol di sini) ----
+try:
+    _nav1, _nav2 = st.columns(2)
+    with _nav1:
+        st.page_link("app.py", label="Google Form → Naskah Cetak", icon="🖨️")
+    with _nav2:
+        st.page_link("pages/2_Soal_ke_Google_Form.py", label="Soal DOCX → Google Form", icon="📝")
+except Exception:
+    st.caption("Halaman *Soal → Google Form*: tambahkan `/Soal_ke_Google_Form` di akhir alamat aplikasi.")
+
 creds = get_google_credentials()
 drive_folder_id = st.secrets.get("DRIVE_FOLDER_ID", "") if "DRIVE_FOLDER_ID" in st.secrets else os.environ.get("DRIVE_FOLDER_ID", "")
 
