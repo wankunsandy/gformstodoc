@@ -23,6 +23,8 @@ from docxtpl import DocxTemplate, InlineImage
 from streamlit_pdf_viewer import pdf_viewer
 from PIL import Image
 
+from ui_theme import apply_theme, link_button, nav_links, render_steps
+
 # Pustaka Google API untuk Opsi C (Service Account & Folder Drive Sekolah)
 try:
     from google.oauth2 import service_account
@@ -1508,127 +1510,38 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-st.markdown("""
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
-
-    html, body, [class*="css"] {
-        font-family: 'Plus Jakarta Sans', sans-serif !important;
-    }
-    .stApp {
-        background-color: #f8fafc;
-    }
-
-    #MainMenu {visibility: hidden;}
-    header {visibility: hidden;}
-    footer {visibility: hidden;}
-    .stDeployButton {display: none;}
-
-    .block-container {
-        max-width: 820px !important;
-        padding-top: 2.5rem !important;
-        padding-bottom: 4rem !important;
-    }
-
-    [data-testid="stForm"] {
-        background-color: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 16px;
-        padding: 2rem 2.2rem !important;
-        box-shadow: 0 4px 20px -2px rgba(15, 23, 42, 0.05);
-    }
-
-    .stTextInput input {
-        border-radius: 10px !important;
-        border: 1px solid #cbd5e1 !important;
-        padding: 0.65rem 0.9rem !important;
-        font-size: 0.92rem !important;
-        background-color: #f8fafc !important;
-    }
-    .stTextInput input:focus {
-        border-color: #4f46e5 !important;
-        box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15) !important;
-        background-color: #ffffff !important;
-    }
-
-    [data-testid="stFileUploader"] section {
-        border-radius: 12px !important;
-        border: 1.5px dashed #cbd5e1 !important;
-        background-color: #f8fafc !important;
-        padding: 1rem !important;
-        transition: all 0.2s ease;
-    }
-    [data-testid="stFileUploader"] section:hover {
-        border-color: #6366f1 !important;
-        background-color: #eef2ff !important;
-    }
-
-    [data-testid="stFormSubmitButton"] button {
-        background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%) !important;
-        color: white !important;
-        font-weight: 700 !important;
-        font-size: 0.98rem !important;
-        padding: 0.75rem 1.5rem !important;
-        border-radius: 12px !important;
-        border: none !important;
-        box-shadow: 0 4px 12px rgba(79, 70, 229, 0.25) !important;
-        transition: all 0.2s ease !important;
-        margin-top: 0.5rem !important;
-    }
-    [data-testid="stFormSubmitButton"] button:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 6px 16px rgba(79, 70, 229, 0.35) !important;
-    }
-
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-        background-color: #e2e8f0;
-        padding: 6px;
-        border-radius: 12px;
-    }
-    .stTabs [data-baseweb="tab"] {
-        border-radius: 8px;
-        padding: 8px 16px;
-        font-weight: 600;
-        font-size: 0.9rem;
-    }
-    .stTabs [aria-selected="true"] {
-        background-color: #ffffff !important;
-        color: #4f46e5 !important;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-    }
-
-    .stTextInput label, .stSelectbox label, [data-testid="stFileUploader"] label {
-        font-weight: 600 !important;
-        color: #1e293b !important;
-        font-size: 0.9rem !important;
-    }
-</style>
-""", unsafe_allow_html=True)
+apply_theme()
 
 st.markdown("""
 <div style="text-align: center; margin-bottom: 2rem;">
-    <span style="background-color: #e0e7ff; color: #4338ca; padding: 6px 14px; border-radius: 9999px; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase;">
+    <span style="background-color: var(--fp-accent-soft); color: var(--fp-accent-soft-text); padding: 6px 14px; border-radius: 9999px; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase;">
         Otomatisasi Dokumen Ujian
     </span>
-    <h1 style="color: #0f172a; font-size: 2.25rem; font-weight: 800; margin-top: 0.85rem; margin-bottom: 0.5rem; letter-spacing: -0.025em;">
+    <h1 style="color: var(--fp-text); font-size: 2.25rem; font-weight: 800; margin-top: 0.85rem; margin-bottom: 0.5rem; letter-spacing: -0.025em;">
         FormPrint Studio
     </h1>
-    <p style="color: #64748b; font-size: 1rem; max-width: 580px; margin: 0 auto; line-height: 1.5;">
+    <p style="color: var(--fp-muted); font-size: 1rem; max-width: 580px; margin: 0 auto; line-height: 1.5;">
         Konversi <b>Google Form</b> menjadi <b>Naskah Soal</b>, <b>Lembar Jawaban Siswa</b>, dan <b>Kunci Jawaban</b> siap cetak (DOCX & PDF) dalam satu klik.
     </p>
 </div>
 """, unsafe_allow_html=True)
 
-# ---- Navigasi antarhalaman (sidebar disembunyikan, jadi pakai tombol di sini) ----
-try:
-    _nav1, _nav2 = st.columns(2)
-    with _nav1:
-        st.page_link("app.py", label="Google Form → Naskah Cetak", icon="🖨️")
-    with _nav2:
-        st.page_link("pages/2_Soal_ke_Google_Form.py", label="Soal DOCX → Google Form", icon="📝")
-except Exception:
-    st.caption("Halaman *Soal → Google Form*: tambahkan `/Soal_ke_Google_Form` di akhir alamat aplikasi.")
+nav_links()
+
+render_steps("📋 Alur Penggunaan: Google Form → Naskah Cetak", [
+    ("Buat salinan Form satu halaman",
+     "Buka aplikasi <b>Salinan Form</b>, tempel <b>link edit</b> Form ujian, klik <b>Buat Salinan</b>, lalu salin link "
+     "salinannya. Bila Form berupa kuis, unduh juga <b>file kunci (.json)</b>.",
+     link_button("GAS_SALINAN_URL", "Buka aplikasi Salinan Form")),
+    ("Tempel link & unggah template",
+     "Tempel link salinan di kotak di bawah, unggah <b>template naskah soal</b> dan (opsional) "
+     "<b>template lembar jawaban</b> (.docx)."),
+    ("Generate dokumen",
+     "Klik <b>Generate Dokumen</b>. Pratinjau lalu unduh <b>Naskah Soal</b> dan <b>Lembar Jawaban Siswa</b> (DOCX/PDF)."),
+    ("Kunci jawaban & skor (opsional)",
+     "Di panel <b>🔑 Isi Kunci Jawaban & Skor</b>, muat file kunci dari langkah 1 atau isi manual, "
+     "lalu klik <b>Generate Kunci Jawaban</b>. Simpan kunci (.json) agar bisa dipakai lagi."),
+])
 
 creds = get_google_credentials()
 drive_folder_id = st.secrets.get("DRIVE_FOLDER_ID", "") if "DRIVE_FOLDER_ID" in st.secrets else os.environ.get("DRIVE_FOLDER_ID", "")
@@ -1638,7 +1551,7 @@ if creds and drive_folder_id:
     forms_list = list_forms_in_drive_folder(creds, drive_folder_id)
     if forms_list:
         st.markdown(f"""
-        <div style="background-color: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; padding: 12px 16px; border-radius: 12px; font-size: 0.88rem; font-weight: 600; margin-bottom: 1rem;">
+        <div style="background-color: var(--fp-ok-bg); border: 1px solid var(--fp-ok-border); color: var(--fp-ok-text); padding: 12px 16px; border-radius: 12px; font-size: 0.88rem; font-weight: 600; margin-bottom: 1rem;">
             📁 Terhubung ke Folder Google Drive Sekolah ({len(forms_list)} Google Form tersedia)
         </div>
         """, unsafe_allow_html=True)
@@ -1862,8 +1775,8 @@ def render_key_panel() -> None:
 with st.form("form_utama"):
     st.markdown("""
     <div style="margin-bottom: 0.5rem;">
-        <span style="font-size: 1.05rem; font-weight: 700; color: #0f172a;">Konfigurasi Dokumen</span>
-        <p style="font-size: 0.8rem; color: #64748b; margin-top: 2px;">Bagian 1 (Identitas) dan Bagian Akhir (Konfirmasi Selesai) otomatis dilewati.</p>
+        <span style="font-size: 1.05rem; font-weight: 700; color: var(--fp-text);">Konfigurasi Dokumen</span>
+        <p style="font-size: 0.8rem; color: var(--fp-muted); margin-top: 2px;">Bagian 1 (Identitas) dan Bagian Akhir (Konfirmasi Selesai) otomatis dilewati.</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1983,7 +1896,7 @@ if st.session_state.get("generated"):
     judul = st.session_state.get("judul_naskah", "Dokumen")
 
     st.markdown("""
-    <div style="background-color: #ecfdf5; border: 1px solid #6ee7b7; color: #065f46; padding: 14px 18px; border-radius: 12px; font-weight: 600; font-size: 0.92rem; margin-top: 1.5rem; margin-bottom: 1rem;">
+    <div style="background-color: var(--fp-ok-bg); border: 1px solid var(--fp-ok-border); color: var(--fp-ok-text); padding: 14px 18px; border-radius: 12px; font-weight: 600; font-size: 0.92rem; margin-top: 1.5rem; margin-bottom: 1rem;">
         ✅ Dokumen siap cetak berhasil dibuat! Pilih tab di bawah untuk mengunduh atau melihat pratinjau.
     </div>
     """, unsafe_allow_html=True)
@@ -2049,7 +1962,7 @@ if st.session_state.get("generated"):
         render_key_panel()
 
 st.markdown("""
-<div style="text-align: center; margin-top: 3.5rem; color: #94a3b8; font-size: 0.78rem;">
+<div style="text-align: center; margin-top: 3.5rem; color: var(--fp-faint); font-size: 0.78rem;">
     FormPrint Studio • Sistem Otomatisasi Naskah Ujian & Lembar Jawaban
 </div>
 """, unsafe_allow_html=True)
